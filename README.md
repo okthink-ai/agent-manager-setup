@@ -2,6 +2,27 @@
 
 Setup scripts for provisioning and configuring a Hetzner VPS to run [Agent Manager](https://github.com/okthink-ai/claude-manager).
 
+`provision.sh` greets you with a bodega-style splash (shown here without its terminal colors):
+
+```text
+   ✦ .    ˚      · ✦                         コードを管理
+  ▟▙▟▙▟▙▟▙▟▙▟▙▟▙▟▙▟▙▟▙▟▙▟▙   ┌─ OPEN 24/7 ─┐
+
+     ██   ███ ████ █  █ ████          ╭──────╮
+    █  █ █    █    ██ █   █           │ ▘  ▘ │
+    ████ █ ██ ███  █ ██   █           │  ◡   │
+    █  █ █  █ █    █  █   █           ╰─┬──┬─╯
+    █  █  ███ ████ █  █   █            ╝  ╚ </>
+
+    █  █  ██  █  █  ██   ███ ████ ███
+    ████ █  █ ██ █ █  █ █    █    █  █
+    █▐▌█ ████ █ ██ ████ █ ██ ███  ███
+    █  █ █  █ █  █ █  █ █  █ █    █ █
+    █  █ █  █ █  █ █  █  ███ ████ █  █   s · e · t · u · p
+
+    ── your code · your agents · one bodega ──
+```
+
 ## Quick Start
 
 ### 1. Run the provisioning script on your laptop
@@ -18,6 +39,10 @@ This will:
 - Or print a manual checklist for the Hetzner Console
 - Write an SSH config entry (with your consent)
 - Copy `setup.sh` to the server
+
+The script asks for your consent before every step that changes something — installing the CLI, uploading your SSH key, creating the firewall, and creating the (paid) server, which is gated behind an explicit cost confirmation. Press Enter to accept the default (yes) or `n` to decline.
+
+**The one manual step: a Hetzner API token.** Hetzner has no API to create a project or mint a token, so this can't be automated — you paste a token once and it's saved and reused on every later run. You don't need to create a new project: Hetzner gives you a **Default** project at signup, and any existing project works. In the Console, open a project → Security → API Tokens → Generate (Read & Write). The script can open the Console for you.
 
 ### 2. SSH into the server and run the setup script
 
@@ -44,7 +69,19 @@ This will:
 
 ## Server Specs
 
-The default server type is **CPX31** (4 vCPU, 8 GB RAM, 160 GB SSD) running Ubuntu 24.04 LTS. Estimated cost: ~$9-12/month.
+The provisioning script doesn't lock you to a single server type. It picks the **best instance for your location**: after detecting your nearest Hetzner region, it lists every server type that meets the spec floor (**≥ 4 vCPU / ≥ 8 GB RAM**) and is actually in stock there, sorted cheapest-first, and defaults to the cheapest. You can accept the default or override it.
+
+Which types qualify depends on the region (Hetzner offers different families in different datacenters):
+
+| Region | Typical qualifying types (4 vCPU / 8 GB tier) | Approx. price/mo (ex. VAT) |
+|--------|-----------------------------------------------|----------------------------|
+| EU — Germany (Falkenstein, Nuremberg), Finland (Helsinki) | CX33 (x86), CAX21 (ARM), CPX31 / CPX32 (AMD) | ~€6.49–€9 |
+| US — Ashburn, Hillsboro | CPX32 (AMD) | ~€9–13 |
+| Singapore | CPX32 (AMD) | ~€9–13 |
+
+ARM (CAX) instances are eligible where available — everything we install (Node.js 22, Claude Code, Tailscale, fail2ban) runs on ARM64, and Hetzner auto-selects the matching Ubuntu 24.04 LTS image. EU users get the cheapest options; US and Singapore users get CPX32, the best type Hetzner stocks at that tier in those regions.
+
+Prices and exact type availability change over time — the script always reads Hetzner's live catalogue, so what it offers is current.
 
 ## What Gets Installed
 

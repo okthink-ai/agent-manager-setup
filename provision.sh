@@ -17,14 +17,22 @@ SSH_KEY_PATH="$HOME/.ssh/agent_manager"
 SSH_CONFIG_HOST="agent-manager-vps"
 SERVER_NAME="agent-manager"
 FIREWALL_NAME="agent-manager-firewall"
-SERVER_TYPE="cpx31"
 IMAGE="ubuntu-24.04"
+
+# Minimum spec floor a server type must meet to qualify. The script picks the
+# cheapest qualifying type that is actually available in the chosen location —
+# which may be an x86 type (CX/CPX) or an ARM type (CAX), whichever is best for
+# that region. SERVER_TYPE is resolved at runtime, not hardcoded.
+MIN_VCPU=4
+MIN_RAM_GB=8
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+DIM='\033[2m'
 BOLD='\033[1m'
 NC='\033[0m'
 
@@ -32,6 +40,58 @@ info()  { printf "${CYAN}==> %s${NC}\n" "$*"; }
 ok()    { printf "${GREEN}==> %s${NC}\n" "$*"; }
 warn()  { printf "${YELLOW}==> %s${NC}\n" "$*"; }
 err()   { printf "${RED}==> %s${NC}\n" "$*" >&2; }
+
+# Yes/no prompt. Empty input (just Enter) counts as yes. Returns 0 for yes, 1
+# for no. Always used as an if-condition, so it's safe under `set -e`; an EOF
+# (Ctrl+D) reads as "no" and lets the caller decline gracefully.
+confirm() {
+    local reply
+    read -rp "$1 [Y/n]: " reply || return 1
+    [[ -z "$reply" || "$reply" =~ ^[Yy] ]]
+}
+
+# Best-effort: open a URL in the user's browser. Returns non-zero if there's no
+# opener (e.g. a headless box), so callers can fall back to printing the link.
+open_url() {
+    local opener=""
+    if command -v open &>/dev/null; then opener="open"
+    elif command -v xdg-open &>/dev/null; then opener="xdg-open"
+    else return 1; fi
+    "$opener" "$1" &>/dev/null &
+    return 0
+}
+
+# Cute bodega-style splash. Pure decoration — never let it abort the run.
+banner() {
+    printf "\n"
+    printf "   ${YELLOW}✦${NC} ${DIM}.${NC}    ${YELLOW}˚${NC}      ${DIM}·${NC} ${YELLOW}✦${NC}                         ${DIM}コードを管理${NC}\n"
+    printf "  ${RED}▟${YELLOW}▙${RED}▟${YELLOW}▙${RED}▟${YELLOW}▙${RED}▟${YELLOW}▙${RED}▟${YELLOW}▙${RED}▟${YELLOW}▙${RED}▟${YELLOW}▙${RED}▟${YELLOW}▙${RED}▟${YELLOW}▙${RED}▟${YELLOW}▙${RED}▟${YELLOW}▙${RED}▟${YELLOW}▙${NC}   ${BOLD}┌─ OPEN 24/7 ─┐${NC}\n"
+    printf "\n"
+    printf "    ${CYAN}${BOLD} ██   ███ ████ █  █ ████${NC}          ${GREEN}╭──────╮${NC}\n"
+    printf "    ${CYAN}${BOLD}█  █ █    █    ██ █   █ ${NC}          ${GREEN}│${NC} ${BOLD}▘  ▘${NC} ${GREEN}│${NC}\n"
+    printf "    ${CYAN}${BOLD}████ █ ██ ███  █ ██   █ ${NC}          ${GREEN}│${NC}  ${YELLOW}◡${NC}   ${GREEN}│${NC}\n"
+    printf "    ${CYAN}${BOLD}█  █ █  █ █    █  █   █ ${NC}          ${GREEN}╰─┬──┬─╯${NC}\n"
+    printf "    ${CYAN}${BOLD}█  █  ███ ████ █  █   █ ${NC}           ${GREEN}╝  ╚${NC} ${DIM}</>${NC}\n"
+    printf "\n"
+    printf "    ${MAGENTA}${BOLD}█  █  ██  █  █  ██   ███ ████ ███${NC}\n"
+    printf "    ${MAGENTA}${BOLD}████ █  █ ██ █ █  █ █    █    █  █${NC}\n"
+    printf "    ${MAGENTA}${BOLD}█▐▌█ ████ █ ██ ████ █ ██ ███  ███${NC}\n"
+    printf "    ${MAGENTA}${BOLD}█  █ █  █ █  █ █  █ █  █ █    █ █${NC}\n"
+    printf "    ${MAGENTA}${BOLD}█  █ █  █ █  █ █  █  ███ ████ █  █${NC}   ${DIM}s · e · t · u · p${NC}\n"
+    printf "\n"
+    printf "    ${DIM}── your code · your agents · one bodega ──${NC}\n"
+    printf "\n"
+}
+banner
+
+# Remove any stray temp file on exit (e.g. an interrupted SSH-config rewrite).
+cleanup() { [[ -n "${SSH_CONFIG:-}" && -f "${SSH_CONFIG}.tmp" ]] && rm -f "${SSH_CONFIG}.tmp"; }
+trap cleanup EXIT
+
+# On Ctrl+C, tell the user the script is safe to re-run. Every expensive step
+# (key, token, SSH key, firewall, server) is idempotent and gets skipped on the
+# next run, so re-running picks up where this left off rather than starting over.
+trap 'echo; err "Interrupted. Re-run this script to resume — finished steps are skipped."; exit 130' INT
 
 # ─── Pre-flight checks ───────────────────────────────────────────────
 
@@ -41,10 +101,34 @@ if [[ ! -f "$SETUP_SCRIPT" ]]; then
     exit 1
 fi
 
+# Required local tools. hcloud is intentionally NOT here — the automated path
+# installs it on demand. Everything below must already be present.
+REQUIRED_CMDS=(curl jq ssh scp ssh-keygen awk sort grep sed cut)
+MISSING_CMDS=()
+for cmd in "${REQUIRED_CMDS[@]}"; do
+    command -v "$cmd" &>/dev/null || MISSING_CMDS+=("$cmd")
+done
+if [[ ${#MISSING_CMDS[@]} -gt 0 ]]; then
+    err "Missing required tools: ${MISSING_CMDS[*]}"
+    echo "" >&2
+    echo "  Install them with your package manager, then re-run. Examples:" >&2
+    echo "    macOS:         brew install ${MISSING_CMDS[*]}" >&2
+    echo "    Debian/Ubuntu: sudo apt-get install -y ${MISSING_CMDS[*]}   (ssh tools: openssh-client)" >&2
+    echo "    Fedora/RHEL:   sudo dnf install -y ${MISSING_CMDS[*]}        (ssh tools: openssh-clients)" >&2
+    exit 1
+fi
+
 # ─── SSH key ──────────────────────────────────────────────────────────
 
-if [[ -f "$SSH_KEY_PATH" ]]; then
+if [[ -f "$SSH_KEY_PATH" && -f "${SSH_KEY_PATH}.pub" ]]; then
     ok "SSH key already exists at $SSH_KEY_PATH"
+elif [[ -f "$SSH_KEY_PATH" && ! -f "${SSH_KEY_PATH}.pub" ]]; then
+    # Private key present but public key missing — almost always a previous run
+    # interrupted during ssh-keygen. Refuse to guess; tell the user how to reset.
+    err "Found a private key at $SSH_KEY_PATH but no public key at ${SSH_KEY_PATH}.pub"
+    err "This usually means a previous run was interrupted during key generation."
+    err "Remove the partial key and re-run:  rm -f \"$SSH_KEY_PATH\""
+    exit 1
 else
     # Check if the user wants to reuse an existing key
     echo "No SSH key found at $SSH_KEY_PATH."
@@ -88,6 +172,10 @@ else
     fi
 fi
 
+if [[ ! -f "${SSH_KEY_PATH}.pub" ]]; then
+    err "Public key not found at ${SSH_KEY_PATH}.pub — cannot continue."
+    exit 1
+fi
 SSH_PUBKEY=$(cat "${SSH_KEY_PATH}.pub")
 echo ""
 
@@ -109,7 +197,16 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
     if command -v hcloud &>/dev/null; then
         ok "hcloud CLI found: $(hcloud version 2>/dev/null || echo 'unknown version')"
     else
-        info "hcloud CLI not found — installing..."
+        echo ""
+        warn "The hcloud CLI is not installed (it talks to the Hetzner API for you)."
+        echo "  On macOS it's installed via Homebrew; on Linux it's downloaded from"
+        echo "  GitHub and moved into /usr/local/bin (this asks for sudo)."
+        if ! confirm "Install the hcloud CLI now?"; then
+            err "hcloud is required for the automated path. Install it yourself and re-run,"
+            err "or re-run and choose the manual checklist: https://github.com/hetznercloud/cli"
+            exit 1
+        fi
+        info "Installing hcloud CLI..."
         if [[ "$(uname)" == "Darwin" ]]; then
             if command -v brew &>/dev/null; then
                 brew install hcloud
@@ -118,14 +215,31 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
                 exit 1
             fi
         elif [[ "$(uname)" == "Linux" ]]; then
-            HCLOUD_VERSION=$(curl -s https://api.github.com/repos/hetznercloud/cli/releases/latest | grep tag_name | cut -d '"' -f 4)
+            HCLOUD_VERSION=$(curl -fsSL https://api.github.com/repos/hetznercloud/cli/releases/latest 2>/dev/null | grep tag_name | cut -d '"' -f 4)
+            if [[ -z "$HCLOUD_VERSION" ]]; then
+                err "Could not determine the latest hcloud version (GitHub API unreachable or rate-limited)."
+                err "Install hcloud manually, then re-run: https://github.com/hetznercloud/cli/releases"
+                exit 1
+            fi
             ARCH=$(uname -m)
             case "$ARCH" in
                 x86_64)  HCLOUD_ARCH="linux-amd64" ;;
                 aarch64) HCLOUD_ARCH="linux-arm64" ;;
                 *)       err "Unsupported architecture: $ARCH"; exit 1 ;;
             esac
-            curl -sL "https://github.com/hetznercloud/cli/releases/download/${HCLOUD_VERSION}/hcloud-${HCLOUD_ARCH}.tar.gz" | tar xz -C /tmp
+            # -f makes curl fail on a 404 instead of piping an HTML error page to tar.
+            HCLOUD_TARBALL="/tmp/hcloud-${HCLOUD_ARCH}.tar.gz"
+            if ! curl -fsSL "https://github.com/hetznercloud/cli/releases/download/${HCLOUD_VERSION}/hcloud-${HCLOUD_ARCH}.tar.gz" -o "$HCLOUD_TARBALL"; then
+                err "Failed to download hcloud ${HCLOUD_VERSION} for ${HCLOUD_ARCH}."
+                err "Install hcloud manually, then re-run: https://github.com/hetznercloud/cli/releases"
+                exit 1
+            fi
+            if ! tar xz -C /tmp -f "$HCLOUD_TARBALL"; then
+                err "Failed to extract the hcloud archive at $HCLOUD_TARBALL."
+                rm -f "$HCLOUD_TARBALL"
+                exit 1
+            fi
+            rm -f "$HCLOUD_TARBALL"
             HCLOUD_BIN=$(find /tmp -name 'hcloud' -type f -perm -u+x 2>/dev/null | head -1)
             if [[ -z "$HCLOUD_BIN" ]]; then
                 err "Could not find hcloud binary after extraction"
@@ -148,16 +262,27 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         echo ""
         printf "${BOLD}Setting up Hetzner API access${NC}\n"
         echo ""
-        echo "  You need an API token scoped to a Hetzner Cloud project."
-        echo "  Each token belongs to one project — if you don't have a"
-        echo "  project yet, create one first."
+        echo "  This needs a Read & Write API token for a Hetzner Cloud project."
         echo ""
-        printf "  ${CYAN}Step 1:${NC} Go to https://console.hetzner.cloud\n"
-        printf "  ${CYAN}Step 2:${NC} Create a project (if you don't have one)\n"
-        echo "         Click '+ New Project', name it (e.g. 'agent-manager')"
-        printf "  ${CYAN}Step 3:${NC} Inside your project: Security → API Tokens → Generate API Token\n"
-        echo "         Set permissions to Read & Write"
-        echo "         Copy the token — you only see it once"
+        echo "  Why this one step is manual: Hetzner has no API to create a project"
+        echo "  or mint a token, so the bootstrap token can't be automated. You paste"
+        echo "  it once — it's then saved and reused automatically on every later run."
+        echo ""
+        echo "  You almost certainly don't need to create a project: Hetzner makes a"
+        echo "  'Default' project for you at signup, and any existing project works."
+        echo "  Only make a new one if you want to isolate this from other resources."
+        echo ""
+        printf "  ${CYAN}1.${NC} Open the Console and pick a project (the Default is fine)\n"
+        printf "  ${CYAN}2.${NC} Security → API Tokens → Generate API Token\n"
+        echo "     Permissions: Read & Write — copy it (it's shown only once)"
+        echo ""
+        if confirm "Open the Hetzner Console in your browser now?"; then
+            if open_url "https://console.hetzner.cloud/projects"; then
+                ok "Opened https://console.hetzner.cloud/projects"
+            else
+                warn "No browser opener found. Visit: https://console.hetzner.cloud/projects"
+            fi
+        fi
         echo ""
 
         while true; do
@@ -193,6 +318,13 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
     if hcloud ssh-key describe "$SSH_KEY_NAME" &>/dev/null; then
         ok "SSH key '$SSH_KEY_NAME' already exists in Hetzner"
     else
+        echo ""
+        echo "  Your PUBLIC key (${SSH_KEY_PATH}.pub) is uploaded to Hetzner as"
+        echo "  '$SSH_KEY_NAME' so the new server trusts it. Your private key never leaves this machine."
+        if ! confirm "Upload your public SSH key to Hetzner?"; then
+            err "The SSH key is required to log into the server. Aborting (nothing was created)."
+            exit 1
+        fi
         info "Uploading SSH key to Hetzner..."
         hcloud ssh-key create --name "$SSH_KEY_NAME" --public-key "$SSH_PUBKEY"
         ok "SSH key uploaded"
@@ -211,6 +343,14 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
     fi
 
     if ! hcloud firewall describe "$FIREWALL_NAME" &>/dev/null; then
+        echo ""
+        echo "  Firewall '$FIREWALL_NAME' locks the server to SSH + ping inbound and only"
+        echo "  the outbound ports setup needs (HTTPS, HTTP, DNS, NTP, Git-SSH). It's free."
+        if ! confirm "Create the firewall now?"; then
+            err "The firewall is required for a hardened setup. Aborting (nothing was created)."
+            err "Re-run when ready; your token and SSH key are already saved."
+            exit 1
+        fi
         info "Creating firewall '$FIREWALL_NAME'..."
         hcloud firewall create --name "$FIREWALL_NAME"
 
@@ -229,27 +369,73 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         ok "Firewall created with all rules"
     fi
 
-    # Create server — skip location prompt if server already exists
+    # Create server — skip location/type selection if server already exists
     if hcloud server describe "$SERVER_NAME" &>/dev/null; then
         ok "Server '$SERVER_NAME' already exists"
-        SERVER_IP=$(hcloud server ip "$SERVER_NAME")
+        SERVER_IP=$(hcloud server ip "$SERVER_NAME" 2>/dev/null || true)
     else
-        # Pick location — only show regions where the server type is actually available
-        # (not just priced). The location_available column reflects real-time availability.
-        echo ""
-        info "Finding available locations for $SERVER_TYPE..."
-        hcloud server-type list -o noheader -o columns=name,location,location_available \
-            | awk -v type="$SERVER_TYPE" '$1 == type && $3 == "true" { print $2 }' \
-            > /tmp/hcloud-available-locations.txt
-
-        AVAILABLE_LOCATIONS=$(cat /tmp/hcloud-available-locations.txt)
-        if [[ -z "$AVAILABLE_LOCATIONS" ]]; then
-            err "No locations found where $SERVER_TYPE is available."
-            err "Check https://console.hetzner.cloud for current availability."
+        # Cache the server-type catalogue once — we reuse it for every location.
+        # This is queried against YOUR authenticated Hetzner project, so it
+        # returns exactly the types, locations, pricing, and stock your account
+        # is entitled to provision. An EU account and a US account each get their
+        # own real option set here — we never guess entitlements from geo-IP.
+        #   ST_JSON   : full specs + per-location pricing (EUR, ex. VAT)
+        #   ST_AVAIL  : one "name location available" row per (type, location);
+        #               location_available reflects real-time stock, not just pricing.
+        info "Fetching server types available to your Hetzner project..."
+        # Capture with `|| true` so a transient API/network error surfaces as our
+        # own clear message below instead of a bare set -e abort mid-substitution.
+        ST_JSON=$(hcloud server-type list -o json 2>/dev/null) || true
+        ST_AVAIL=$(hcloud server-type list -o noheader -o columns=name,location,location_available 2>/dev/null) || true
+        if [[ -z "$ST_JSON" || "$ST_JSON" == "[]" || -z "$ST_AVAIL" ]]; then
+            err "Could not fetch the Hetzner server catalogue (empty or failed response)."
+            err "Check your network and that the token has read access, then re-run."
             exit 1
         fi
 
-        # Detect the user's approximate location to suggest the closest datacenter
+        # candidates_for <location> → TSV rows "name cores ram disk arch eur/mo",
+        # cheapest first, for every type that meets the spec floor AND is in stock
+        # at that location. Works the same everywhere — EU, US, or Singapore —
+        # so each user gets the best type their nearest region actually offers.
+        candidates_for() {
+            local loc="$1" avail
+            avail=$(awk -v l="$loc" '$2 == l && $3 == "true" { print $1 }' <<<"$ST_AVAIL")
+            [[ -z "$avail" ]] && return 0
+            # No deprecation filter: a legacy type (e.g. CPX31, still sold in EU)
+            # is a valid pick as long as it's in stock and priced here. Real-time
+            # orderability is gated by ST_AVAIL below, not by deprecation status.
+            jq -r --argjson vcpu "$MIN_VCPU" --argjson ram "$MIN_RAM_GB" --arg loc "$loc" '
+                .[]
+                | select((.cores >= $vcpu) and (.memory >= $ram))
+                | . as $st
+                | (.prices[]? | select(.location == $loc)) as $p
+                | select($p != null)
+                | [$st.name, ($st.cores|tostring), ($st.memory|tostring),
+                   ($st.disk|tostring), $st.architecture, $p.price_monthly.net] | @tsv
+            ' <<<"$ST_JSON" \
+                | awk -v avail="$avail" '
+                    BEGIN { n=split(avail, a, "\n"); for (i=1;i<=n;i++) ok[a[i]]=1 }
+                    ok[$1]' \
+                | sort -t$'\t' -k6 -g
+        }
+
+        # Locations that have at least one qualifying type in stock right now.
+        ALL_LOCATIONS=$(awk '{print $2}' <<<"$ST_AVAIL" | sort -u)
+        AVAILABLE_LOCATIONS=""
+        for loc in $ALL_LOCATIONS; do
+            [[ -n "$(candidates_for "$loc")" ]] && AVAILABLE_LOCATIONS+="$loc"$'\n'
+        done
+        AVAILABLE_LOCATIONS=$(echo "$AVAILABLE_LOCATIONS" | sed '/^$/d')
+
+        if [[ -z "$AVAILABLE_LOCATIONS" ]]; then
+            err "No location currently has a server type meeting the spec floor"
+            err "(${MIN_VCPU} vCPU / ${MIN_RAM_GB} GB RAM). Check https://console.hetzner.cloud."
+            exit 1
+        fi
+
+        # Geo-IP is used ONLY to suggest the nearest of the locations your account
+        # can already use (computed above) — it never changes the option set.
+        # If detection fails, you simply pick a location yourself; nothing breaks.
         SUGGESTED=""
         USER_LON=""
         USER_LAT=""
@@ -267,12 +453,16 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
 
         # Build location list with distances
         echo ""
+        info "Locations your Hetzner project can provision (with a qualifying type in stock):"
+        echo ""
         printf "  %-8s  %-20s  %s\n" "NAME" "CITY" ""
         printf "  %-8s  %-20s  %s\n" "----" "----" ""
         BEST_DIST=999999
         for loc in $AVAILABLE_LOCATIONS; do
-            LOC_JSON=$(hcloud location describe "$loc" -o json 2>/dev/null)
-            CITY=$(echo "$LOC_JSON" | jq -r '.city // "unknown"')
+            # || true: a hiccup describing one location shouldn't abort the run —
+            # we just fall back to "unknown" city and skip its distance estimate.
+            LOC_JSON=$(hcloud location describe "$loc" -o json 2>/dev/null || true)
+            CITY=$(echo "$LOC_JSON" | jq -r '.city // "unknown"' 2>/dev/null || echo "unknown")
             MARKER=""
 
             # Calculate rough distance if we have user coordinates
@@ -316,9 +506,64 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
                 break
             fi
 
-            err "'$LOCATION' is not available for $SERVER_TYPE. Pick one from the list above."
+            err "'$LOCATION' has no qualifying server type. Pick one from the list above."
         done
-        rm -f /tmp/hcloud-available-locations.txt
+
+        # ── Pick the server type for the chosen location ──
+        # Cheapest qualifying type is the default; the rest are offered as overrides.
+        CANDIDATES=$(candidates_for "$LOCATION")
+
+        echo ""
+        info "Server types available in $LOCATION (>= ${MIN_VCPU} vCPU / ${MIN_RAM_GB} GB, cheapest first):"
+        echo ""
+        printf "  %-3s %-8s %-5s %-7s %-8s %-5s %s\n" "#" "TYPE" "VCPU" "RAM" "DISK" "ARCH" "PRICE/mo"
+        printf "  %-3s %-8s %-5s %-7s %-8s %-5s %s\n" "---" "----" "----" "-----" "-----" "----" "--------"
+        TYPE_COUNT=0
+        declare -a TYPE_NAMES=()
+        while IFS=$'\t' read -r name cores ram disk arch price; do
+            [[ -z "$name" ]] && continue
+            TYPE_COUNT=$((TYPE_COUNT + 1))
+            TYPE_NAMES+=("$name")
+            EUR=$(awk "BEGIN { printf \"%.2f\", $price }")
+            TAG=""
+            [[ $TYPE_COUNT -eq 1 ]] && TAG="  <- cheapest (default)"
+            printf "  %-3s %-8s %-5s %-7s %-8s %-5s ~€%s%s\n" \
+                "$TYPE_COUNT" "$name" "$cores" "${ram} GB" "${disk} GB" "$arch" "$EUR" "$TAG"
+        done <<<"$CANDIDATES"
+        echo ""
+        echo "  Prices are Hetzner's monthly rate in EUR, excluding VAT."
+        echo ""
+
+        DEFAULT_TYPE="${TYPE_NAMES[0]}"
+        while true; do
+            read -rp "Choose a server type by # or name [$DEFAULT_TYPE]: " TYPE_CHOICE
+
+            if [[ -z "$TYPE_CHOICE" ]]; then
+                SERVER_TYPE="$DEFAULT_TYPE"
+                break
+            elif [[ "$TYPE_CHOICE" =~ ^[0-9]+$ ]] && (( TYPE_CHOICE >= 1 && TYPE_CHOICE <= TYPE_COUNT )); then
+                SERVER_TYPE="${TYPE_NAMES[$((TYPE_CHOICE - 1))]}"
+                break
+            elif printf '%s\n' "${TYPE_NAMES[@]}" | grep -qw "$TYPE_CHOICE"; then
+                SERVER_TYPE="$TYPE_CHOICE"
+                break
+            fi
+
+            err "Pick a number (1-$TYPE_COUNT) or a type name from the list above."
+        done
+        ok "Selected server type: $SERVER_TYPE"
+
+        # Look the chosen type's monthly price back up so the cost warning is exact.
+        CHOSEN_PRICE=$(awk -F'\t' -v t="$SERVER_TYPE" '$1 == t { printf "%.2f", $6; exit }' <<<"$CANDIDATES")
+
+        echo ""
+        warn "About to create a PAID server: '$SERVER_NAME' — $SERVER_TYPE in $LOCATION."
+        warn "Billing starts immediately at ~€${CHOSEN_PRICE}/mo (charged hourly while it exists)."
+        if ! confirm "Create this server now?"; then
+            err "Aborted before creating the server — no charges incurred."
+            err "Re-run anytime; your token, SSH key, and firewall are already set up."
+            exit 1
+        fi
 
         info "Creating server '$SERVER_NAME' ($SERVER_TYPE in $LOCATION)..."
         hcloud server create \
@@ -328,14 +573,28 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
             --location "$LOCATION" \
             --ssh-key "$SSH_KEY_NAME"
 
-        SERVER_IP=$(hcloud server ip "$SERVER_NAME")
+        SERVER_IP=$(hcloud server ip "$SERVER_NAME" 2>/dev/null || true)
         ok "Server created: $SERVER_IP"
     fi
 
+    # A missing IPv4 here would send the SSH wait-loop into 30 doomed retries
+    # against "root@". Fail fast with a clear cause instead.
+    if [[ -z "${SERVER_IP:-}" ]]; then
+        err "Server '$SERVER_NAME' exists but has no public IPv4 address."
+        err "Attach an IPv4 in the Hetzner console (or recreate with IPv4 enabled), then re-run."
+        exit 1
+    fi
+
     # Attach firewall (idempotent — works whether the server was just created or already existed)
-    info "Attaching firewall to server..."
-    hcloud firewall apply-to-resource "$FIREWALL_NAME" --type server --server "$SERVER_NAME" 2>/dev/null || true
-    ok "Firewall attached to server"
+    echo ""
+    if confirm "Attach firewall '$FIREWALL_NAME' to the server now? (strongly recommended)"; then
+        info "Attaching firewall to server..."
+        hcloud firewall apply-to-resource "$FIREWALL_NAME" --type server --server "$SERVER_NAME" 2>/dev/null || true
+        ok "Firewall attached to server"
+    else
+        warn "Skipped firewall attach — the server's ports are exposed until you attach it:"
+        warn "  hcloud firewall apply-to-resource $FIREWALL_NAME --type server --server $SERVER_NAME"
+    fi
 
 else
     # ── Manual path: print checklist ──
@@ -371,7 +630,11 @@ else
     echo "   Servers -> Create Server"
     echo "   - Location: closest to you"
     echo "   - Image: Ubuntu 24.04 LTS"
-    echo "   - Type: CPX31 (4 vCPU, 8 GB RAM, 160 GB SSD)"
+    echo "   - Type: the cheapest in-stock type with >= ${MIN_VCPU} vCPU / ${MIN_RAM_GB} GB RAM"
+    echo "           at your location. The console shows live pricing per region:"
+    echo "             EU (Germany/Finland): CX33, CAX21 (ARM), or CPX31/CPX32 (AMD)"
+    echo "             US (Ashburn/Hillsboro) & Singapore: CPX32 (AMD)"
+    echo "           Pick the cheapest one that meets the spec — they all work."
     echo "   - Networking: enable IPv4"
     echo "   - SSH Key: select your key"
     printf "   - Firewall: attach '%s'\n" "$FIREWALL_NAME"
