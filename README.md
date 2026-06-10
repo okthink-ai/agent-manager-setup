@@ -2,23 +2,17 @@
 
 Setup scripts for provisioning and configuring a Hetzner VPS to run [Agent Manager](https://github.com/okthink-ai/claude-manager).
 
-`provision.sh` greets you with a bodega-style splash — an ASCII rendering of the project wordmark (shown here without its terminal color):
+`provision.sh` greets you with a bodega-style splash — a braille rendering of the project wordmark (shown here without its terminal color):
 
 ```text
-  #####                               #####                      ####
-  #####                #           #  #####        #           ##
-  ############     ##   ###     ###   #####   ###  ###    ###   ###
-  #####   #####   ###   ####   ####   #####  ###    ###  ###    ####
-  #####    ####  ####    #### ####    #####  ###   ####  ###    ####
-  #####    ####  ####    #### ####    ##### ####        #####   ####
-  #####    ####  ####    #### #####   ##### #####        ####   ###
-  #####    ####  ####    #### #####   #####  ####         ###  ###
-  #####    ####  ####    ###   ####   #####  ######   ##  #
-  #####   ####    ####   ##    ############   ########   ##     ###
-  ##  ## ###         #  #        ####  ##        ##     #############
-                                                         ############
-                                            ####                  ###
-                                          #####                    ##
+     ⣀⣤⣴⣶⣶⣾⣿⣿⣿                         ⠛⢿⣿⣿⣿⣿                  ⢀⣤⣤
+   ⣠⣾⠋⠁ ⠈⢿⣿⣿⣿⣿            ⢀⣀         ⢀⣀ ⢸⣿⣿⣿⣿     ⣀⣀        ⣀⣀⢠⡿⢿⣿
+  ⢸⣿⣿⣶⣶⣄ ⢸⣿⣿⣿⣿⣴⣿⣿⣿⣷⣤   ⣠⣶⣿⠋⠙⣿⣿⣦⡀  ⣠⣶⣿⣿⠋⠛⣿⣿⣿⣿⣿  ⣤⣾⡟⠉⢻⣿⣷⣄ ⢀⣴⣾⣿⠋⠙⣿⣿⣶⣍
+  ⠸⣿⣿⣿⣿⣿ ⢸⣿⣿⣿⣿⠁ ⢹⣿⣿⣿⣧ ⣼⣿⣿⡏  ⢹⣿⣿⣿⡄⢰⣿⣿⣿⡇  ⢸⣿⣿⣿⣿⢀⣾⣿⣿⠃ ⢸⣿⣿⣿⡆⣾⣿⣿⣿  ⢹⣿⣿⣿
+   ⠙⠛⠟⠛⠁ ⢸⣿⣿⣿⣿  ⠘⣿⣿⣿⣿⢸⣿⣿⣿⣇  ⢸⣿⣿⣿⣷⣾⣿⣿⣿⡇  ⢸⣿⣿⣿⣿⢸⣿⣿⣿⣧⠶⠟⠛⠋⠉ ⣿⣿⣿⣿  ⢸⣿⣿⣿
+         ⢸⣿⣿⣿⣿  ⢠⣿⣿⣿⣿⠸⣿⣿⣿⣿   ⣿⣿⣿⡟⢻⣿⣿⣿⣧  ⢸⣿⣿⣿⣿⢸⣿⣿⣿⣷⣄    ⣀⠘⠻⣿⣿⣆⣀⣾⣿⡿⠋
+         ⢸⣿⣿⣿⣿  ⣸⣿⣿⣿⠃ ⠹⣿⣿⣿⡄ ⢠⣿⣿⡿⠁⠘⣿⣿⣿⣿⣦⣀⣼⣿⣿⣿⣿ ⠻⣿⣿⣿⣿⣿⣶⣶⣿⠋⣴⣿⣏⣈⣉⣉⣭⣤⣄⣀
+         ⣼⠿⠿⠛⠿⠶⠶⠿⠟⠋⠁   ⠈⠛⠿⠿⠶⠾⠛⠉   ⠈⠛⠿⠿⠿⠛⠹⠿⠿⠛⠛⠛ ⠈⠛⠿⠿⠿⠟⠋  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
 
   AGENT MANAGER SETUP   · your code · your agents · one bodega
 ```
