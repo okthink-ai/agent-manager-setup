@@ -54,10 +54,21 @@ This will:
 - Create a non-root user and harden SSH
 - Install fail2ban, NVM, Node.js 22, Tailscale
 - Authenticate with GitHub (supports secondary accounts)
-- Install Claude Code
+- Install Claude Code, and optionally Codex / Gemini / Pi CLIs
+- **Switch to the non-root user** for all application work
 - Clone and install Agent Manager
 - Build the frontend for production
 - Optionally start the server in a tmux session
+
+After SSH hardening, setup switches to the non-root user for everything that follows — GitHub/AI authentication, the Agent Manager checkout, the build, and the running server all happen as that user, never as root (only `apt` and `tailscale up` still use root, where the OS requires it).
+
+**Optional extra CLIs.** After Claude Code, setup offers to install [OpenAI Codex](https://developers.openai.com/codex/cli) (`@openai/codex`), [Google Gemini CLI](https://www.npmjs.com/package/@google/gemini-cli) (`@google/gemini-cli`), and [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). Install whichever you have accounts/keys for — each prints its own auth hint and a failed install is skipped, not fatal.
+
+**Unattended setup.** GitHub and Tailscale can authenticate without a browser. Export a [Tailscale auth key](https://login.tailscale.com/admin/settings/keys) and/or a [GitHub PAT](https://github.com/settings/tokens) (with `repo` + `read:packages`) before running, and setup uses them instead of the interactive login:
+
+```bash
+TS_AUTHKEY=tskey-... GH_TOKEN=ghp_... bash setup.sh
+```
 
 ## Requirements
 
@@ -90,6 +101,7 @@ Prices and exact type availability change over time — the script always reads 
 | Tailscale | Private networking — access the dashboard without exposing ports |
 | GitHub CLI | Authenticate with GitHub for private package access |
 | Claude Code | The CLI tool that Agent Manager monitors |
+| Codex / Gemini / Pi CLIs | Optional — other terminal coding agents (installed on request) |
 | tmux | Session persistence for long-running processes |
 | fail2ban | SSH brute-force protection |
 
