@@ -8,6 +8,10 @@
 #
 # Either way, it generates an SSH key (if needed), writes ~/.ssh/config, and scp's setup.sh to the server.
 #
+# Usage: bash provision.sh [-y|--bypass-consent]
+#   --bypass-consent  Run unattended — accept every consent prompt and use the
+#                     default choices (suggested location, cheapest server type).
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +30,10 @@ IMAGE="ubuntu-24.04"
 MIN_VCPU=4
 MIN_RAM_GB=8
 
+# When true (set by -y/--bypass-consent), every consent prompt is auto-accepted
+# and selection prompts use their defaults — for unattended/automated runs.
+BYPASS_CONSENT=false
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -40,13 +48,56 @@ ok()    { printf "${GREEN}==> %s${NC}\n" "$*"; }
 warn()  { printf "${YELLOW}==> %s${NC}\n" "$*"; }
 err()   { printf "${RED}==> %s${NC}\n" "$*" >&2; }
 
+usage() {
+    cat <<EOF
+Usage: bash provision.sh [options]
+
+Provision a Hetzner VPS for Agent Manager.
+
+Options:
+  -y, --bypass-consent   Run unattended: accept every consent prompt and use
+                         default choices (suggested location, cheapest server
+                         type). Needs a Hetzner token already configured — via
+                         the saved hcloud context or the HCLOUD_TOKEN env var.
+  -h, --help             Show this help and exit.
+EOF
+}
+
+# Parse CLI args before anything interactive happens.
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -y|--bypass-consent|--yes) BYPASS_CONSENT=true ;;
+        -h|--help) usage; exit 0 ;;
+        *) err "Unknown option: $1"; echo "" >&2; usage >&2; exit 1 ;;
+    esac
+    shift
+done
+
 # Yes/no prompt. Empty input (just Enter) counts as yes. Returns 0 for yes, 1
 # for no. Always used as an if-condition, so it's safe under `set -e`; an EOF
 # (Ctrl+D) reads as "no" and lets the caller decline gracefully.
+# With --bypass-consent it auto-accepts, echoing what it implied.
 confirm() {
+    if [[ "$BYPASS_CONSENT" == true ]]; then
+        ok "$1 → yes (auto, --bypass-consent)"
+        return 0
+    fi
     local reply
     read -rp "$1 [Y/n]: " reply || return 1
     [[ -z "$reply" || "$reply" =~ ^[Yy] ]]
+}
+
+# Read a line into the named variable, or auto-fill <auto-value> under
+# --bypass-consent (echoing the implied answer so the run stays auditable).
+ask() {  # ask <varname> <prompt> <auto-value>
+    local __var="$1" __prompt="$2" __auto="$3" __reply
+    if [[ "$BYPASS_CONSENT" == true ]]; then
+        printf -v "$__var" '%s' "$__auto"
+        ok "${__prompt}${__auto}  (auto, --bypass-consent)"
+        return 0
+    fi
+    read -rp "$__prompt" __reply
+    printf -v "$__var" '%s' "$__reply"
 }
 
 # Best-effort: open a URL in the user's browser. Returns non-zero if there's no
@@ -132,11 +183,14 @@ else
     echo "    1) Generate a new key (recommended)"
     echo "    2) Use an existing SSH key"
     echo ""
-    read -rp "Generate a new key? (y/n): " GEN_KEY
+    ask GEN_KEY "Generate a new key? (y/n): " "y"
 
     if [[ "$GEN_KEY" =~ ^[Yy] ]]; then
         info "Generating SSH key at $SSH_KEY_PATH"
-        ssh-keygen -t ed25519 -C "agent-manager-vps" -f "$SSH_KEY_PATH"
+        KEYGEN_ARGS=(-t ed25519 -C "agent-manager-vps" -f "$SSH_KEY_PATH")
+        # Unattended runs can't answer the passphrase prompt — make it empty.
+        [[ "$BYPASS_CONSENT" == true ]] && KEYGEN_ARGS+=(-N "")
+        ssh-keygen "${KEYGEN_ARGS[@]}"
     else
         echo ""
         echo "  Enter the path to your existing SSH private key."
@@ -181,7 +235,7 @@ echo "  If yes, this script will install the CLI (if needed), walk you through"
 echo "  getting an API token, and create the firewall + server for you."
 echo "  If no, it will print a checklist for the Hetzner Console."
 echo ""
-read -rp "Use Hetzner API? (y/n): " USE_API
+ask USE_API "Use Hetzner API? (y/n): " "y"
 echo ""
 
 if [[ "$USE_API" =~ ^[Yy] ]]; then
@@ -254,6 +308,11 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
     if hcloud server-type list &>/dev/null 2>&1; then
         ok "Hetzner API is reachable (active context: $(hcloud context active 2>/dev/null || echo 'env'))"
     else
+        if [[ "$BYPASS_CONSENT" == true ]]; then
+            err "No working Hetzner API token, and --bypass-consent can't prompt for one."
+            err "Configure it first: run once interactively, or export a valid HCLOUD_TOKEN."
+            exit 1
+        fi
         echo ""
         printf "${BOLD}Setting up Hetzner API access${NC}\n"
         echo ""
@@ -487,22 +546,28 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
             PROMPT="Choose a location [$SUGGESTED]"
         fi
 
-        while true; do
-            echo ""
-            read -rp "$PROMPT: " LOCATION
+        if [[ "$BYPASS_CONSENT" == true ]]; then
+            # Prefer the nearest suggested region; fall back to the first available.
+            LOCATION="${SUGGESTED:-$(echo "$AVAILABLE_LOCATIONS" | head -1)}"
+            ok "Using location: $LOCATION  (auto, --bypass-consent)"
+        else
+            while true; do
+                echo ""
+                read -rp "$PROMPT: " LOCATION
 
-            # Default to suggested if user just presses Enter
-            if [[ -z "$LOCATION" && -n "$SUGGESTED" ]]; then
-                LOCATION="$SUGGESTED"
-                ok "Using suggested location: $LOCATION"
-            fi
+                # Default to suggested if user just presses Enter
+                if [[ -z "$LOCATION" && -n "$SUGGESTED" ]]; then
+                    LOCATION="$SUGGESTED"
+                    ok "Using suggested location: $LOCATION"
+                fi
 
-            if echo "$AVAILABLE_LOCATIONS" | grep -qw "$LOCATION"; then
-                break
-            fi
+                if echo "$AVAILABLE_LOCATIONS" | grep -qw "$LOCATION"; then
+                    break
+                fi
 
-            err "'$LOCATION' has no qualifying server type. Pick one from the list above."
-        done
+                err "'$LOCATION' has no qualifying server type. Pick one from the list above."
+            done
+        fi
 
         # ── Pick the server type for the chosen location ──
         # Cheapest qualifying type is the default; the rest are offered as overrides.
@@ -530,22 +595,27 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         echo ""
 
         DEFAULT_TYPE="${TYPE_NAMES[0]}"
-        while true; do
-            read -rp "Choose a server type by # or name [$DEFAULT_TYPE]: " TYPE_CHOICE
+        if [[ "$BYPASS_CONSENT" == true ]]; then
+            SERVER_TYPE="$DEFAULT_TYPE"
+            ok "Using cheapest server type: $SERVER_TYPE  (auto, --bypass-consent)"
+        else
+            while true; do
+                read -rp "Choose a server type by # or name [$DEFAULT_TYPE]: " TYPE_CHOICE
 
-            if [[ -z "$TYPE_CHOICE" ]]; then
-                SERVER_TYPE="$DEFAULT_TYPE"
-                break
-            elif [[ "$TYPE_CHOICE" =~ ^[0-9]+$ ]] && (( TYPE_CHOICE >= 1 && TYPE_CHOICE <= TYPE_COUNT )); then
-                SERVER_TYPE="${TYPE_NAMES[$((TYPE_CHOICE - 1))]}"
-                break
-            elif printf '%s\n' "${TYPE_NAMES[@]}" | grep -qw "$TYPE_CHOICE"; then
-                SERVER_TYPE="$TYPE_CHOICE"
-                break
-            fi
+                if [[ -z "$TYPE_CHOICE" ]]; then
+                    SERVER_TYPE="$DEFAULT_TYPE"
+                    break
+                elif [[ "$TYPE_CHOICE" =~ ^[0-9]+$ ]] && (( TYPE_CHOICE >= 1 && TYPE_CHOICE <= TYPE_COUNT )); then
+                    SERVER_TYPE="${TYPE_NAMES[$((TYPE_CHOICE - 1))]}"
+                    break
+                elif printf '%s\n' "${TYPE_NAMES[@]}" | grep -qw "$TYPE_CHOICE"; then
+                    SERVER_TYPE="$TYPE_CHOICE"
+                    break
+                fi
 
-            err "Pick a number (1-$TYPE_COUNT) or a type name from the list above."
-        done
+                err "Pick a number (1-$TYPE_COUNT) or a type name from the list above."
+            done
+        fi
         ok "Selected server type: $SERVER_TYPE"
 
         # Look the chosen type's monthly price back up so the cost warning is exact.
@@ -660,7 +730,7 @@ if grep -q "Host ${SSH_CONFIG_HOST}" "$SSH_CONFIG" 2>/dev/null; then
     printf "${YELLOW}SSH config entry '${SSH_CONFIG_HOST}' already exists in %s.${NC}\n" "$SSH_CONFIG"
     echo "  The HostName will be updated to ${SERVER_IP}."
     echo ""
-    read -rp "Update the SSH config entry? (y/n): " UPDATE_SSH
+    ask UPDATE_SSH "Update the SSH config entry? (y/n): " "y"
 
     if [[ "$UPDATE_SSH" =~ ^[Yy] ]]; then
         awk -v host="$SSH_CONFIG_HOST" -v ip="$SERVER_IP" '
@@ -681,7 +751,7 @@ else
         printf "    ${CYAN}%s${NC}\n" "$line"
     done
     echo ""
-    read -rp "Add this entry to your SSH config? (y/n): " ADD_SSH
+    ask ADD_SSH "Add this entry to your SSH config? (y/n): " "y"
 
     if [[ "$ADD_SSH" =~ ^[Yy] ]]; then
         echo "" >> "$SSH_CONFIG"
@@ -706,7 +776,7 @@ if [[ -f "$KNOWN_HOSTS" ]] && grep -q "$SERVER_IP" "$KNOWN_HOSTS" 2>/dev/null; t
     echo "  This is normal when re-provisioning — the new server has a different host key."
     echo "  The old entry must be removed or SSH will refuse to connect."
     echo ""
-    read -rp "Remove the old host key for ${SERVER_IP}? (y/n): " REMOVE_KEY
+    ask REMOVE_KEY "Remove the old host key for ${SERVER_IP}? (y/n): " "y"
 
     if [[ "$REMOVE_KEY" =~ ^[Yy] ]]; then
         ssh-keygen -R "$SERVER_IP" &>/dev/null || true

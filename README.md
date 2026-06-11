@@ -35,6 +35,12 @@ This will:
 
 The script asks for your consent before every step that changes something — installing the CLI, uploading your SSH key, creating the firewall, and creating the (paid) server, which is gated behind an explicit cost confirmation. Press Enter to accept the default (yes) or `n` to decline.
 
+For unattended/automated runs, pass `--bypass-consent` (alias `-y`): every consent prompt is auto-accepted and selection prompts use their defaults (nearest region, cheapest qualifying server type). This **will create a paid server without a cost prompt**, so use it deliberately. It needs a Hetzner token already configured — either a saved `hcloud` context from a prior run or a valid `HCLOUD_TOKEN` exported in the environment (the token is the one step that can't be automated):
+
+```bash
+bash provision.sh --bypass-consent
+```
+
 **The one manual step: a Hetzner API token.** Hetzner has no API to create a project or mint a token, so this can't be automated — you paste a token once and it's saved and reused on every later run. You don't need to create a new project: Hetzner gives you a **Default** project at signup, and any existing project works. In the Console, open a project → Security → API Tokens → Generate (Read & Write). The script can open the Console for you.
 
 ### 2. SSH into the server and run the setup script
