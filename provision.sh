@@ -382,9 +382,14 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         # Capture with `|| true` so a transient API/network error surfaces as our
         # own clear message below instead of a bare set -e abort mid-substitution.
         ST_JSON=$(hcloud server-type list -o json 2>/dev/null) || true
-        ST_AVAIL=$(hcloud server-type list -o noheader -o columns=name,location,location_available 2>/dev/null) || true
-        if [[ -z "$ST_JSON" || "$ST_JSON" == "[]" || -z "$ST_AVAIL" ]]; then
+        if [[ -z "$ST_JSON" || "$ST_JSON" == "[]" ]]; then
             err "Could not fetch the Hetzner server catalogue (empty or failed response)."
+            err "Check your network and that the token has read access, then re-run."
+            exit 1
+        fi
+        ST_AVAIL=$(jq -r '.[] | .name as $n | .locations[] | [$n, .name, (if .available then "true" else "false" end)] | @tsv' <<<"$ST_JSON") || true
+        if [[ -z "$ST_AVAIL" ]]; then
+            err "Could not extract location availability from the Hetzner catalogue."
             err "Check your network and that the token has read access, then re-run."
             exit 1
         fi
@@ -394,12 +399,10 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         # at that location. Works the same everywhere — EU, US, or Singapore —
         # so each user gets the best type their nearest region actually offers.
         candidates_for() {
-            local loc="$1" avail
+            local loc="$1" avail avail_csv
             avail=$(awk -v l="$loc" '$2 == l && $3 == "true" { print $1 }' <<<"$ST_AVAIL")
             [[ -z "$avail" ]] && return 0
-            # No deprecation filter: a legacy type (e.g. CPX31, still sold in EU)
-            # is a valid pick as long as it's in stock and priced here. Real-time
-            # orderability is gated by ST_AVAIL below, not by deprecation status.
+            avail_csv=$(echo "$avail" | paste -sd, -)
             jq -r --argjson vcpu "$MIN_VCPU" --argjson ram "$MIN_RAM_GB" --arg loc "$loc" '
                 .[]
                 | select((.cores >= $vcpu) and (.memory >= $ram))
@@ -409,8 +412,8 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
                 | [$st.name, ($st.cores|tostring), ($st.memory|tostring),
                    ($st.disk|tostring), $st.architecture, $p.price_monthly.net] | @tsv
             ' <<<"$ST_JSON" \
-                | awk -v avail="$avail" '
-                    BEGIN { n=split(avail, a, "\n"); for (i=1;i<=n;i++) ok[a[i]]=1 }
+                | awk -v avail="$avail_csv" '
+                    BEGIN { n=split(avail, a, ","); for (i=1;i<=n;i++) ok[a[i]]=1 }
                     ok[$1]' \
                 | sort -t$'\t' -k6 -g
         }
