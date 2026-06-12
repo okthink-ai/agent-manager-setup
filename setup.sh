@@ -319,12 +319,16 @@ else
     echo "  You can use your main GitHub account, or a secondary account"
     echo "  if you prefer to limit access on this server."
     echo ""
-    echo "  When the browser opens, make sure you're logged into the"
-    echo "  GitHub account you want to use before approving."
+    echo "  This is a headless server with no browser. gh will print a one-time"
+    echo "  code and a URL — open the URL ON YOUR LAPTOP, enter the code, and make"
+    echo "  sure you're signed into the right GitHub account before approving."
+    echo "  (To skip this step entirely, re-run with GH_TOKEN=<your PAT> set.)"
     echo ""
-    info "Authenticating with GitHub via SSH..."
+    info "Authenticating with GitHub..."
     echo ""
-    run_as_user "gh auth login -p ssh"
+    # No GUI browser here, so xdg-open just errors out. Point gh's browser at
+    # `echo` instead — it prints the auth URL for you to open on your laptop.
+    run_as_user "BROWSER=echo gh auth login -p ssh"
     echo ""
 fi
 
