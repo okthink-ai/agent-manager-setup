@@ -35,6 +35,18 @@ This will:
 
 The script asks for your consent before every step that changes something — installing the CLI, uploading your SSH key, creating the firewall, and creating the (paid) server, which is gated behind an explicit cost confirmation. Press Enter to accept the default (yes) or `n` to decline.
 
+For unattended/automated runs, pass `--bypass-consent` (alias `-y`): every consent prompt is auto-accepted and selection prompts use their defaults (nearest region, cheapest qualifying server type). This **will create a paid server without a cost prompt**, so use it deliberately. It needs a Hetzner token already configured — either a saved `hcloud` context from a prior run or a valid `HCLOUD_TOKEN` exported in the environment (the token is the one step that can't be automated):
+
+```bash
+bash provision.sh --bypass-consent
+```
+
+Unattended runs pick the region nearest you via geo-IP. If geo-IP can't detect your location (for example, behind a CI egress firewall), the run stops rather than guess — pass an explicit region instead:
+
+```bash
+bash provision.sh --bypass-consent --location fsn1
+```
+
 **The one manual step: a Hetzner API token.** Hetzner has no API to create a project or mint a token, so this can't be automated — you paste a token once and it's saved and reused on every later run. You don't need to create a new project: Hetzner gives you a **Default** project at signup, and any existing project works. In the Console, open a project → Security → API Tokens → Generate (Read & Write). The script can open the Console for you.
 
 ### 2. SSH into the server and run the setup script
@@ -48,10 +60,23 @@ This will:
 - Create a non-root user and harden SSH
 - Install fail2ban, NVM, Node.js 22, Tailscale
 - Authenticate with GitHub (supports secondary accounts)
-- Install Claude Code
+- Install Claude Code, and optionally Codex / Gemini / Pi CLIs
+- **Switch to the non-root user** for all application work
 - Clone and install Agent Manager
 - Build the frontend for production
 - Optionally start the server in a tmux session
+
+After SSH hardening, setup switches to the non-root user for everything that follows — GitHub/AI authentication, the Agent Manager checkout, the build, and the running server all happen as that user, never as root (only `apt` and `tailscale up` still use root, where the OS requires it).
+
+**Optional extra CLIs.** After Claude Code, setup offers to install [OpenAI Codex](https://developers.openai.com/codex/cli) (`@openai/codex`), [Google Gemini CLI](https://www.npmjs.com/package/@google/gemini-cli) (`@google/gemini-cli`), and [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). Install whichever you have accounts/keys for — each prints its own auth hint and a failed install is skipped, not fatal.
+
+**Non-interactive auth.** The GitHub and Tailscale logins can skip the browser. Export a [Tailscale auth key](https://login.tailscale.com/admin/settings/keys) and/or a [GitHub PAT](https://github.com/settings/tokens) (with `repo` + `read:packages`) before running, and setup uses them instead of the interactive login:
+
+```bash
+TS_AUTHKEY=tskey-... GH_TOKEN=ghp_... bash setup.sh
+```
+
+This removes the two browser logins only — `setup.sh` is not a fully hands-off run. It still prompts for the username, git identity, the SSH-access safety check, Claude Code auth, the optional-CLI choices, and whether to start the server, so keep a terminal attached.
 
 ## Requirements
 
@@ -84,6 +109,7 @@ Prices and exact type availability change over time — the script always reads 
 | Tailscale | Private networking — access the dashboard without exposing ports |
 | GitHub CLI | Authenticate with GitHub for private package access |
 | Claude Code | The CLI tool that Agent Manager monitors |
+| Codex / Gemini / Pi CLIs | Optional — other terminal coding agents (installed on request) |
 | tmux | Session persistence for long-running processes |
 | fail2ban | SSH brute-force protection |
 

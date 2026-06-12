@@ -8,6 +8,10 @@
 #
 # Either way, it generates an SSH key (if needed), writes ~/.ssh/config, and scp's setup.sh to the server.
 #
+# Usage: bash provision.sh [-y|--bypass-consent]
+#   --bypass-consent  Run unattended — accept every consent prompt and use the
+#                     default choices (suggested location, cheapest server type).
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +30,14 @@ IMAGE="ubuntu-24.04"
 MIN_VCPU=4
 MIN_RAM_GB=8
 
+# When true (set by -y/--bypass-consent), every consent prompt is auto-accepted
+# and selection prompts use their defaults — for unattended/automated runs.
+BYPASS_CONSENT=false
+
+# Explicit region (set by --location). Overrides the location prompt and the
+# geo-IP suggestion. Lets unattended runs pin a region when geo-IP can't.
+LOCATION_OVERRIDE=""
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -40,24 +52,142 @@ ok()    { printf "${GREEN}==> %s${NC}\n" "$*"; }
 warn()  { printf "${YELLOW}==> %s${NC}\n" "$*"; }
 err()   { printf "${RED}==> %s${NC}\n" "$*" >&2; }
 
+usage() {
+    cat <<EOF
+Usage: bash provision.sh [options]
+
+Provision a Hetzner VPS for Agent Manager.
+
+Options:
+  -y, --bypass-consent   Run unattended: accept every consent prompt and use
+                         default choices (nearest location, cheapest server
+                         type). Needs a Hetzner token already configured — via
+                         the saved hcloud context or the HCLOUD_TOKEN env var.
+      --location <name>  Region to provision in (e.g. fsn1, ash, hel1). Skips
+                         the location prompt; pair with --bypass-consent when
+                         geo-IP can't detect your nearest region.
+  -h, --help             Show this help and exit.
+EOF
+}
+
+# Parse CLI args before anything interactive happens.
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -y|--bypass-consent|--yes) BYPASS_CONSENT=true ;;
+        --location)
+            LOCATION_OVERRIDE="${2:-}"
+            [[ -z "$LOCATION_OVERRIDE" ]] && { err "--location needs a value (e.g. --location fsn1)"; exit 1; }
+            shift ;;
+        --location=*) LOCATION_OVERRIDE="${1#*=}" ;;
+        -h|--help) usage; exit 0 ;;
+        *) err "Unknown option: $1"; echo "" >&2; usage >&2; exit 1 ;;
+    esac
+    shift
+done
+
 # Yes/no prompt. Empty input (just Enter) counts as yes. Returns 0 for yes, 1
 # for no. Always used as an if-condition, so it's safe under `set -e`; an EOF
 # (Ctrl+D) reads as "no" and lets the caller decline gracefully.
+# With --bypass-consent it auto-accepts, echoing what it implied.
 confirm() {
+    if [[ "$BYPASS_CONSENT" == true ]]; then
+        ok "$1 → yes (auto, --bypass-consent)"
+        return 0
+    fi
     local reply
     read -rp "$1 [Y/n]: " reply || return 1
     [[ -z "$reply" || "$reply" =~ ^[Yy] ]]
 }
 
-# Best-effort: open a URL in the user's browser. Returns non-zero if there's no
-# opener (e.g. a headless box), so callers can fall back to printing the link.
+# Read a line into the named variable, or auto-fill <auto-value> under
+# --bypass-consent (echoing the implied answer so the run stays auditable).
+ask() {  # ask <varname> <prompt> <auto-value>
+    local __var="$1" __prompt="$2" __auto="$3" __reply
+    if [[ "$BYPASS_CONSENT" == true ]]; then
+        printf -v "$__var" '%s' "$__auto"
+        ok "${__prompt}${__auto}  (auto, --bypass-consent)"
+        return 0
+    fi
+    read -rp "$__prompt" __reply
+    printf -v "$__var" '%s' "$__reply"
+}
+
+# Read a secret into the named variable, masking each keystroke with a bullet so
+# you can see that input registered — unlike `read -s`, which shows nothing at
+# all. Handles backspace and Enter; pasting a multi-character token works too.
+read_secret() {  # read_secret <varname> <prompt>
+    local __var="$1" __char __secret=""
+    printf '%s' "$2" >&2
+    while IFS= read -rsn1 __char; do
+        case "$__char" in
+            '' | $'\n' | $'\r') break ;;             # Enter
+            $'\x7f' | $'\x08')                        # Backspace / Delete
+                if [[ -n "$__secret" ]]; then
+                    __secret="${__secret%?}"
+                    printf '\b \b' >&2
+                fi ;;
+            *)
+                __secret+="$__char"
+                printf '•' >&2 ;;
+        esac
+    done
+    printf '\n' >&2
+    printf -v "$__var" '%s' "$__secret"
+}
+
+# Try to open a URL in a real browser. Returns 0 ONLY if it actually launched
+# one — not merely because an opener binary exists. On a headless/SSH session
+# (no DISPLAY) or when no browser handler is configured, returns non-zero so
+# callers fall back to printing the link. Runs synchronously so we can trust
+# the opener's exit status (xdg-open returns non-zero when it finds no handler).
 open_url() {
-    local opener=""
-    if command -v open &>/dev/null; then opener="open"
-    elif command -v xdg-open &>/dev/null; then opener="xdg-open"
-    else return 1; fi
-    "$opener" "$1" &>/dev/null &
-    return 0
+    local url="$1"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        command -v open &>/dev/null || return 1
+        open "$url" &>/dev/null
+        return
+    fi
+    # Linux: a browser can only open inside a graphical session.
+    [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] || return 1
+    command -v xdg-open &>/dev/null || return 1
+    xdg-open "$url" &>/dev/null
+}
+
+# Detect the system package manager, for auto-installing missing tools.
+detect_pkg_mgr() {
+    if   command -v apt-get &>/dev/null; then echo apt
+    elif command -v dnf     &>/dev/null; then echo dnf
+    elif command -v yum     &>/dev/null; then echo yum
+    elif command -v brew    &>/dev/null; then echo brew
+    elif command -v pacman  &>/dev/null; then echo pacman
+    elif command -v zypper  &>/dev/null; then echo zypper
+    fi
+}
+
+# Map a required command to its package name for the given manager. Most match
+# the command name; the exceptions are the ssh tools and the coreutils set.
+pkg_for_cmd() {  # pkg_for_cmd <cmd> <mgr>
+    case "$1" in
+        ssh|scp|ssh-keygen)
+            case "$2" in apt) echo openssh-client ;; dnf|yum) echo openssh-clients ;; *) echo openssh ;; esac ;;
+        awk)                 echo gawk ;;
+        sort|cut|paste|head) echo coreutils ;;
+        *)                   echo "$1" ;;
+    esac
+}
+
+# Install packages with the detected manager (sudo where the OS needs it).
+install_pkgs() {  # install_pkgs <mgr> <pkg...>
+    local mgr="$1"; shift
+    case "$mgr" in
+        apt)    sudo apt-get update -qq && sudo apt-get install -y "$@" ;;
+        dnf)    sudo dnf install -y "$@" ;;
+        yum)    sudo yum install -y "$@" ;;
+        brew)   brew install "$@" ;;
+        pacman) sudo pacman -S --noconfirm "$@" ;;
+        zypper) sudo zypper install -y "$@" ;;
+        *)      return 1 ;;
+    esac
 }
 
 # Cute bodega-style splash — an ASCII rendering of the "bodega" wordmark. Pure
@@ -98,19 +228,53 @@ fi
 
 # Required local tools. hcloud is intentionally NOT here — the automated path
 # installs it on demand. Everything below must already be present.
-REQUIRED_CMDS=(curl jq ssh scp ssh-keygen awk sort grep sed cut)
+REQUIRED_CMDS=(curl jq ssh scp ssh-keygen awk sort grep sed cut paste)
 MISSING_CMDS=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
     command -v "$cmd" &>/dev/null || MISSING_CMDS+=("$cmd")
 done
 if [[ ${#MISSING_CMDS[@]} -gt 0 ]]; then
-    err "Missing required tools: ${MISSING_CMDS[*]}"
-    echo "" >&2
-    echo "  Install them with your package manager, then re-run. Examples:" >&2
-    echo "    macOS:         brew install ${MISSING_CMDS[*]}" >&2
-    echo "    Debian/Ubuntu: sudo apt-get install -y ${MISSING_CMDS[*]}   (ssh tools: openssh-client)" >&2
-    echo "    Fedora/RHEL:   sudo dnf install -y ${MISSING_CMDS[*]}        (ssh tools: openssh-clients)" >&2
-    exit 1
+    warn "Missing required tools: ${MISSING_CMDS[*]}"
+    PKG_MGR=$(detect_pkg_mgr)
+    if [[ -z "$PKG_MGR" ]]; then
+        err "No supported package manager found (apt/dnf/yum/brew/pacman/zypper)."
+        err "Install these manually and re-run: ${MISSING_CMDS[*]}"
+        exit 1
+    fi
+
+    # Map the missing commands to packages, de-duplicated using only bash
+    # builtins — one of the missing tools could be something we'd normally
+    # dedupe with (e.g. sort), so we can't rely on it here.
+    declare -A _seen_pkg=()
+    INSTALL_PKGS=()
+    for cmd in "${MISSING_CMDS[@]}"; do
+        pkg=$(pkg_for_cmd "$cmd" "$PKG_MGR")
+        [[ -n "${_seen_pkg[$pkg]:-}" ]] || { INSTALL_PKGS+=("$pkg"); _seen_pkg[$pkg]=1; }
+    done
+
+    echo "  They can be installed with $PKG_MGR: ${INSTALL_PKGS[*]}"
+    if ! confirm "Install them now?"; then
+        err "These tools are required. Install them and re-run: ${INSTALL_PKGS[*]}"
+        exit 1
+    fi
+
+    info "Installing: ${INSTALL_PKGS[*]}"
+    if ! install_pkgs "$PKG_MGR" "${INSTALL_PKGS[@]}"; then
+        err "Auto-install failed. Install manually and re-run: ${INSTALL_PKGS[*]}"
+        exit 1
+    fi
+
+    # Confirm every command is now actually on PATH before moving on.
+    STILL_MISSING=()
+    for cmd in "${MISSING_CMDS[@]}"; do
+        command -v "$cmd" &>/dev/null || STILL_MISSING+=("$cmd")
+    done
+    if [[ ${#STILL_MISSING[@]} -gt 0 ]]; then
+        err "Still missing after install: ${STILL_MISSING[*]}"
+        err "Install these manually and re-run."
+        exit 1
+    fi
+    ok "Installed missing tools: ${INSTALL_PKGS[*]}"
 fi
 
 # ─── SSH key ──────────────────────────────────────────────────────────
@@ -132,11 +296,14 @@ else
     echo "    1) Generate a new key (recommended)"
     echo "    2) Use an existing SSH key"
     echo ""
-    read -rp "Generate a new key? (y/n): " GEN_KEY
+    ask GEN_KEY "Generate a new key? (y/n): " "y"
 
     if [[ "$GEN_KEY" =~ ^[Yy] ]]; then
         info "Generating SSH key at $SSH_KEY_PATH"
-        ssh-keygen -t ed25519 -C "agent-manager-vps" -f "$SSH_KEY_PATH"
+        KEYGEN_ARGS=(-t ed25519 -C "agent-manager-vps" -f "$SSH_KEY_PATH")
+        # Unattended runs can't answer the passphrase prompt — make it empty.
+        [[ "$BYPASS_CONSENT" == true ]] && KEYGEN_ARGS+=(-N "")
+        ssh-keygen "${KEYGEN_ARGS[@]}"
     else
         echo ""
         echo "  Enter the path to your existing SSH private key."
@@ -181,7 +348,7 @@ echo "  If yes, this script will install the CLI (if needed), walk you through"
 echo "  getting an API token, and create the firewall + server for you."
 echo "  If no, it will print a checklist for the Hetzner Console."
 echo ""
-read -rp "Use Hetzner API? (y/n): " USE_API
+ask USE_API "Use Hetzner API? (y/n): " "y"
 echo ""
 
 if [[ "$USE_API" =~ ^[Yy] ]]; then
@@ -205,14 +372,22 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         if [[ "$(uname)" == "Darwin" ]]; then
             if command -v brew &>/dev/null; then
                 brew install hcloud
+                ok "hcloud CLI installed"
             else
                 err "Install Homebrew first (https://brew.sh), then re-run this script."
                 exit 1
             fi
         elif [[ "$(uname)" == "Linux" ]]; then
-            HCLOUD_VERSION=$(curl -fsSL https://api.github.com/repos/hetznercloud/cli/releases/latest 2>/dev/null | grep tag_name | cut -d '"' -f 4)
+            # Resolve the latest version from the releases "latest" redirect on
+            # github.com — NOT api.github.com, which rate-limits unauthenticated
+            # requests to 60/hour (hitting that limit was killing this step).
+            # The `|| true` stops a failed lookup from silently aborting the
+            # whole script under `set -e`; the guard below reports it instead.
+            HCLOUD_VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+                https://github.com/hetznercloud/cli/releases/latest 2>/dev/null \
+                | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1) || true
             if [[ -z "$HCLOUD_VERSION" ]]; then
-                err "Could not determine the latest hcloud version (GitHub API unreachable or rate-limited)."
+                err "Could not determine the latest hcloud version (GitHub unreachable)."
                 err "Install hcloud manually, then re-run: https://github.com/hetznercloud/cli/releases"
                 exit 1
             fi
@@ -235,7 +410,7 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
                 exit 1
             fi
             rm -f "$HCLOUD_TARBALL"
-            HCLOUD_BIN=$(find /tmp -name 'hcloud' -type f -perm -u+x 2>/dev/null | head -1)
+            HCLOUD_BIN=$(find /tmp -name 'hcloud' -type f -perm -u+x 2>/dev/null | head -1) || true
             if [[ -z "$HCLOUD_BIN" ]]; then
                 err "Could not find hcloud binary after extraction"
                 exit 1
@@ -246,6 +421,14 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
             err "Unsupported OS. Install hcloud manually: https://github.com/hetznercloud/cli"
             exit 1
         fi
+
+        # Make sure the install actually put hcloud on PATH before continuing —
+        # never fall through to the API steps with no working CLI.
+        if ! command -v hcloud &>/dev/null; then
+            err "hcloud was installed but isn't on your PATH. Open a new shell (or"
+            err "add its install dir to PATH), then re-run this script."
+            exit 1
+        fi
     fi
 
     # Step 2: API token via hcloud context (persisted to ~/.config/hcloud/cli.toml)
@@ -254,6 +437,11 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
     if hcloud server-type list &>/dev/null 2>&1; then
         ok "Hetzner API is reachable (active context: $(hcloud context active 2>/dev/null || echo 'env'))"
     else
+        if [[ "$BYPASS_CONSENT" == true ]]; then
+            err "No working Hetzner API token, and --bypass-consent can't prompt for one."
+            err "Configure it first: run once interactively, or export a valid HCLOUD_TOKEN."
+            exit 1
+        fi
         echo ""
         printf "${BOLD}Setting up Hetzner API access${NC}\n"
         echo ""
@@ -273,16 +461,16 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         echo ""
         if confirm "Open the Hetzner Console in your browser now?"; then
             if open_url "https://console.hetzner.cloud/projects"; then
-                ok "Opened https://console.hetzner.cloud/projects"
+                ok "Opened the Hetzner Console in your browser."
             else
-                warn "No browser opener found. Visit: https://console.hetzner.cloud/projects"
+                warn "No graphical browser here — open this on a machine that has one:"
+                printf "  ${CYAN}https://console.hetzner.cloud/projects${NC}\n"
             fi
         fi
         echo ""
 
         while true; do
-            read -rsp "Paste your Hetzner API token (input is hidden): " HCLOUD_TOKEN
-            echo ""
+            read_secret HCLOUD_TOKEN "Paste your Hetzner API token (input is masked): "
             ok "Token received."
 
             export HCLOUD_TOKEN
@@ -381,9 +569,14 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         # Capture with `|| true` so a transient API/network error surfaces as our
         # own clear message below instead of a bare set -e abort mid-substitution.
         ST_JSON=$(hcloud server-type list -o json 2>/dev/null) || true
-        ST_AVAIL=$(hcloud server-type list -o noheader -o columns=name,location,location_available 2>/dev/null) || true
-        if [[ -z "$ST_JSON" || "$ST_JSON" == "[]" || -z "$ST_AVAIL" ]]; then
+        if [[ -z "$ST_JSON" || "$ST_JSON" == "[]" ]]; then
             err "Could not fetch the Hetzner server catalogue (empty or failed response)."
+            err "Check your network and that the token has read access, then re-run."
+            exit 1
+        fi
+        ST_AVAIL=$(jq -r '.[] | .name as $n | .locations[] | [$n, .name, (if .available then "true" else "false" end)] | @tsv' <<<"$ST_JSON") || true
+        if [[ -z "$ST_AVAIL" ]]; then
+            err "Could not extract location availability from the Hetzner catalogue."
             err "Check your network and that the token has read access, then re-run."
             exit 1
         fi
@@ -393,12 +586,10 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         # at that location. Works the same everywhere — EU, US, or Singapore —
         # so each user gets the best type their nearest region actually offers.
         candidates_for() {
-            local loc="$1" avail
+            local loc="$1" avail avail_csv
             avail=$(awk -v l="$loc" '$2 == l && $3 == "true" { print $1 }' <<<"$ST_AVAIL")
             [[ -z "$avail" ]] && return 0
-            # No deprecation filter: a legacy type (e.g. CPX31, still sold in EU)
-            # is a valid pick as long as it's in stock and priced here. Real-time
-            # orderability is gated by ST_AVAIL below, not by deprecation status.
+            avail_csv=$(echo "$avail" | paste -sd, -)
             jq -r --argjson vcpu "$MIN_VCPU" --argjson ram "$MIN_RAM_GB" --arg loc "$loc" '
                 .[]
                 | select((.cores >= $vcpu) and (.memory >= $ram))
@@ -408,8 +599,8 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
                 | [$st.name, ($st.cores|tostring), ($st.memory|tostring),
                    ($st.disk|tostring), $st.architecture, $p.price_monthly.net] | @tsv
             ' <<<"$ST_JSON" \
-                | awk -v avail="$avail" '
-                    BEGIN { n=split(avail, a, "\n"); for (i=1;i<=n;i++) ok[a[i]]=1 }
+                | awk -v avail="$avail_csv" '
+                    BEGIN { n=split(avail, a, ","); for (i=1;i<=n;i++) ok[a[i]]=1 }
                     ok[$1]' \
                 | sort -t$'\t' -k6 -g
         }
@@ -436,9 +627,11 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         USER_LAT=""
         GEO_INFO=$(curl -s --max-time 5 https://ipinfo.io/json 2>/dev/null || true)
         if [[ -n "$GEO_INFO" ]]; then
-            USER_LOC=$(echo "$GEO_INFO" | jq -r '.loc // empty' 2>/dev/null)
-            USER_CITY=$(echo "$GEO_INFO" | jq -r '.city // empty' 2>/dev/null)
-            USER_COUNTRY=$(echo "$GEO_INFO" | jq -r '.country // empty' 2>/dev/null)
+            # `|| true`: geo-IP is best-effort. If ipinfo returns non-JSON, don't
+            # let jq's failure abort the run under `set -e` — just skip the hint.
+            USER_LOC=$(echo "$GEO_INFO" | jq -r '.loc // empty' 2>/dev/null || true)
+            USER_CITY=$(echo "$GEO_INFO" | jq -r '.city // empty' 2>/dev/null || true)
+            USER_COUNTRY=$(echo "$GEO_INFO" | jq -r '.country // empty' 2>/dev/null || true)
             if [[ -n "$USER_LOC" ]]; then
                 USER_LAT=$(echo "$USER_LOC" | cut -d, -f1)
                 USER_LON=$(echo "$USER_LOC" | cut -d, -f2)
@@ -462,8 +655,8 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
 
             # Calculate rough distance if we have user coordinates
             if [[ -n "$USER_LAT" && -n "$USER_LON" ]]; then
-                LOC_LAT=$(echo "$LOC_JSON" | jq -r '.latitude // empty')
-                LOC_LON=$(echo "$LOC_JSON" | jq -r '.longitude // empty')
+                LOC_LAT=$(echo "$LOC_JSON" | jq -r '.latitude // empty' 2>/dev/null || true)
+                LOC_LON=$(echo "$LOC_JSON" | jq -r '.longitude // empty' 2>/dev/null || true)
                 if [[ -n "$LOC_LAT" && -n "$LOC_LON" ]]; then
                     # Simple Euclidean distance on lat/lon (good enough for ranking)
                     DIST=$(awk "BEGIN { printf \"%.0f\", sqrt(($USER_LAT - $LOC_LAT)^2 + ($USER_LON - $LOC_LON)^2) * 111 }")
@@ -487,22 +680,44 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
             PROMPT="Choose a location [$SUGGESTED]"
         fi
 
-        while true; do
-            echo ""
-            read -rp "$PROMPT: " LOCATION
-
-            # Default to suggested if user just presses Enter
-            if [[ -z "$LOCATION" && -n "$SUGGESTED" ]]; then
-                LOCATION="$SUGGESTED"
-                ok "Using suggested location: $LOCATION"
+        if [[ -n "$LOCATION_OVERRIDE" ]]; then
+            # Explicit --location wins, for both interactive and unattended runs.
+            if ! echo "$AVAILABLE_LOCATIONS" | grep -qw "$LOCATION_OVERRIDE"; then
+                err "Location '$LOCATION_OVERRIDE' (from --location) has no qualifying server type."
+                err "Available: $(echo $AVAILABLE_LOCATIONS | tr '\n' ' ')"
+                exit 1
             fi
-
-            if echo "$AVAILABLE_LOCATIONS" | grep -qw "$LOCATION"; then
-                break
+            LOCATION="$LOCATION_OVERRIDE"
+            ok "Using location: $LOCATION  (from --location)"
+        elif [[ "$BYPASS_CONSENT" == true ]]; then
+            # Unattended: use the nearest detected region. Never guess — if
+            # geo-IP found nothing, stop rather than provision in a random region.
+            if [[ -z "$SUGGESTED" ]]; then
+                err "Can't auto-pick a location: geo-IP detection returned no region."
+                err "Re-run with an explicit region, e.g.:  --bypass-consent --location fsn1"
+                err "Available: $(echo $AVAILABLE_LOCATIONS | tr '\n' ' ')"
+                exit 1
             fi
+            LOCATION="$SUGGESTED"
+            ok "Using nearest location: $LOCATION  (auto, --bypass-consent)"
+        else
+            while true; do
+                echo ""
+                read -rp "$PROMPT: " LOCATION
 
-            err "'$LOCATION' has no qualifying server type. Pick one from the list above."
-        done
+                # Default to suggested if user just presses Enter
+                if [[ -z "$LOCATION" && -n "$SUGGESTED" ]]; then
+                    LOCATION="$SUGGESTED"
+                    ok "Using suggested location: $LOCATION"
+                fi
+
+                if echo "$AVAILABLE_LOCATIONS" | grep -qw "$LOCATION"; then
+                    break
+                fi
+
+                err "'$LOCATION' has no qualifying server type. Pick one from the list above."
+            done
+        fi
 
         # ── Pick the server type for the chosen location ──
         # Cheapest qualifying type is the default; the rest are offered as overrides.
@@ -530,22 +745,27 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         echo ""
 
         DEFAULT_TYPE="${TYPE_NAMES[0]}"
-        while true; do
-            read -rp "Choose a server type by # or name [$DEFAULT_TYPE]: " TYPE_CHOICE
+        if [[ "$BYPASS_CONSENT" == true ]]; then
+            SERVER_TYPE="$DEFAULT_TYPE"
+            ok "Using cheapest server type: $SERVER_TYPE  (auto, --bypass-consent)"
+        else
+            while true; do
+                read -rp "Choose a server type by # or name [$DEFAULT_TYPE]: " TYPE_CHOICE
 
-            if [[ -z "$TYPE_CHOICE" ]]; then
-                SERVER_TYPE="$DEFAULT_TYPE"
-                break
-            elif [[ "$TYPE_CHOICE" =~ ^[0-9]+$ ]] && (( TYPE_CHOICE >= 1 && TYPE_CHOICE <= TYPE_COUNT )); then
-                SERVER_TYPE="${TYPE_NAMES[$((TYPE_CHOICE - 1))]}"
-                break
-            elif printf '%s\n' "${TYPE_NAMES[@]}" | grep -qw "$TYPE_CHOICE"; then
-                SERVER_TYPE="$TYPE_CHOICE"
-                break
-            fi
+                if [[ -z "$TYPE_CHOICE" ]]; then
+                    SERVER_TYPE="$DEFAULT_TYPE"
+                    break
+                elif [[ "$TYPE_CHOICE" =~ ^[0-9]+$ ]] && (( TYPE_CHOICE >= 1 && TYPE_CHOICE <= TYPE_COUNT )); then
+                    SERVER_TYPE="${TYPE_NAMES[$((TYPE_CHOICE - 1))]}"
+                    break
+                elif printf '%s\n' "${TYPE_NAMES[@]}" | grep -qw "$TYPE_CHOICE"; then
+                    SERVER_TYPE="$TYPE_CHOICE"
+                    break
+                fi
 
-            err "Pick a number (1-$TYPE_COUNT) or a type name from the list above."
-        done
+                err "Pick a number (1-$TYPE_COUNT) or a type name from the list above."
+            done
+        fi
         ok "Selected server type: $SERVER_TYPE"
 
         # Look the chosen type's monthly price back up so the cost warning is exact.
@@ -660,7 +880,7 @@ if grep -q "Host ${SSH_CONFIG_HOST}" "$SSH_CONFIG" 2>/dev/null; then
     printf "${YELLOW}SSH config entry '${SSH_CONFIG_HOST}' already exists in %s.${NC}\n" "$SSH_CONFIG"
     echo "  The HostName will be updated to ${SERVER_IP}."
     echo ""
-    read -rp "Update the SSH config entry? (y/n): " UPDATE_SSH
+    ask UPDATE_SSH "Update the SSH config entry? (y/n): " "y"
 
     if [[ "$UPDATE_SSH" =~ ^[Yy] ]]; then
         awk -v host="$SSH_CONFIG_HOST" -v ip="$SERVER_IP" '
@@ -681,7 +901,7 @@ else
         printf "    ${CYAN}%s${NC}\n" "$line"
     done
     echo ""
-    read -rp "Add this entry to your SSH config? (y/n): " ADD_SSH
+    ask ADD_SSH "Add this entry to your SSH config? (y/n): " "y"
 
     if [[ "$ADD_SSH" =~ ^[Yy] ]]; then
         echo "" >> "$SSH_CONFIG"
@@ -706,7 +926,7 @@ if [[ -f "$KNOWN_HOSTS" ]] && grep -q "$SERVER_IP" "$KNOWN_HOSTS" 2>/dev/null; t
     echo "  This is normal when re-provisioning — the new server has a different host key."
     echo "  The old entry must be removed or SSH will refuse to connect."
     echo ""
-    read -rp "Remove the old host key for ${SERVER_IP}? (y/n): " REMOVE_KEY
+    ask REMOVE_KEY "Remove the old host key for ${SERVER_IP}? (y/n): " "y"
 
     if [[ "$REMOVE_KEY" =~ ^[Yy] ]]; then
         ssh-keygen -R "$SERVER_IP" &>/dev/null || true
