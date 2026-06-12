@@ -112,6 +112,29 @@ ask() {  # ask <varname> <prompt> <auto-value>
     printf -v "$__var" '%s' "$__reply"
 }
 
+# Read a secret into the named variable, masking each keystroke with a bullet so
+# you can see that input registered — unlike `read -s`, which shows nothing at
+# all. Handles backspace and Enter; pasting a multi-character token works too.
+read_secret() {  # read_secret <varname> <prompt>
+    local __var="$1" __char __secret=""
+    printf '%s' "$2" >&2
+    while IFS= read -rsn1 __char; do
+        case "$__char" in
+            '' | $'\n' | $'\r') break ;;             # Enter
+            $'\x7f' | $'\x08')                        # Backspace / Delete
+                if [[ -n "$__secret" ]]; then
+                    __secret="${__secret%?}"
+                    printf '\b \b' >&2
+                fi ;;
+            *)
+                __secret+="$__char"
+                printf '•' >&2 ;;
+        esac
+    done
+    printf '\n' >&2
+    printf -v "$__var" '%s' "$__secret"
+}
+
 # Try to open a URL in a real browser. Returns 0 ONLY if it actually launched
 # one — not merely because an opener binary exists. On a headless/SSH session
 # (no DISPLAY) or when no browser handler is configured, returns non-zero so
@@ -447,8 +470,7 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         echo ""
 
         while true; do
-            read -rsp "Paste your Hetzner API token (input is hidden): " HCLOUD_TOKEN
-            echo ""
+            read_secret HCLOUD_TOKEN "Paste your Hetzner API token (input is masked): "
             ok "Token received."
 
             export HCLOUD_TOKEN
