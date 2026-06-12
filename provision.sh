@@ -112,15 +112,22 @@ ask() {  # ask <varname> <prompt> <auto-value>
     printf -v "$__var" '%s' "$__reply"
 }
 
-# Best-effort: open a URL in the user's browser. Returns non-zero if there's no
-# opener (e.g. a headless box), so callers can fall back to printing the link.
+# Try to open a URL in a real browser. Returns 0 ONLY if it actually launched
+# one — not merely because an opener binary exists. On a headless/SSH session
+# (no DISPLAY) or when no browser handler is configured, returns non-zero so
+# callers fall back to printing the link. Runs synchronously so we can trust
+# the opener's exit status (xdg-open returns non-zero when it finds no handler).
 open_url() {
-    local opener=""
-    if command -v open &>/dev/null; then opener="open"
-    elif command -v xdg-open &>/dev/null; then opener="xdg-open"
-    else return 1; fi
-    "$opener" "$1" &>/dev/null &
-    return 0
+    local url="$1"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        command -v open &>/dev/null || return 1
+        open "$url" &>/dev/null
+        return
+    fi
+    # Linux: a browser can only open inside a graphical session.
+    [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] || return 1
+    command -v xdg-open &>/dev/null || return 1
+    xdg-open "$url" &>/dev/null
 }
 
 # Detect the system package manager, for auto-installing missing tools.
@@ -431,9 +438,10 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         echo ""
         if confirm "Open the Hetzner Console in your browser now?"; then
             if open_url "https://console.hetzner.cloud/projects"; then
-                ok "Opened https://console.hetzner.cloud/projects"
+                ok "Opened the Hetzner Console in your browser."
             else
-                warn "No browser opener found. Visit: https://console.hetzner.cloud/projects"
+                warn "No graphical browser here — open this on a machine that has one:"
+                printf "  ${CYAN}https://console.hetzner.cloud/projects${NC}\n"
             fi
         fi
         echo ""
