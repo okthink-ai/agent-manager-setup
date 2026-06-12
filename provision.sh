@@ -161,7 +161,7 @@ fi
 
 # Required local tools. hcloud is intentionally NOT here — the automated path
 # installs it on demand. Everything below must already be present.
-REQUIRED_CMDS=(curl jq ssh scp ssh-keygen awk sort grep sed cut)
+REQUIRED_CMDS=(curl jq ssh scp ssh-keygen awk sort grep sed cut paste)
 MISSING_CMDS=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
     command -v "$cmd" &>/dev/null || MISSING_CMDS+=("$cmd")
