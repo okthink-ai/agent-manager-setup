@@ -271,14 +271,22 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         if [[ "$(uname)" == "Darwin" ]]; then
             if command -v brew &>/dev/null; then
                 brew install hcloud
+                ok "hcloud CLI installed"
             else
                 err "Install Homebrew first (https://brew.sh), then re-run this script."
                 exit 1
             fi
         elif [[ "$(uname)" == "Linux" ]]; then
-            HCLOUD_VERSION=$(curl -fsSL https://api.github.com/repos/hetznercloud/cli/releases/latest 2>/dev/null | grep tag_name | cut -d '"' -f 4)
+            # Resolve the latest version from the releases "latest" redirect on
+            # github.com — NOT api.github.com, which rate-limits unauthenticated
+            # requests to 60/hour (hitting that limit was killing this step).
+            # The `|| true` stops a failed lookup from silently aborting the
+            # whole script under `set -e`; the guard below reports it instead.
+            HCLOUD_VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+                https://github.com/hetznercloud/cli/releases/latest 2>/dev/null \
+                | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1) || true
             if [[ -z "$HCLOUD_VERSION" ]]; then
-                err "Could not determine the latest hcloud version (GitHub API unreachable or rate-limited)."
+                err "Could not determine the latest hcloud version (GitHub unreachable)."
                 err "Install hcloud manually, then re-run: https://github.com/hetznercloud/cli/releases"
                 exit 1
             fi
@@ -301,7 +309,7 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
                 exit 1
             fi
             rm -f "$HCLOUD_TARBALL"
-            HCLOUD_BIN=$(find /tmp -name 'hcloud' -type f -perm -u+x 2>/dev/null | head -1)
+            HCLOUD_BIN=$(find /tmp -name 'hcloud' -type f -perm -u+x 2>/dev/null | head -1) || true
             if [[ -z "$HCLOUD_BIN" ]]; then
                 err "Could not find hcloud binary after extraction"
                 exit 1
@@ -310,6 +318,14 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
             ok "hcloud CLI installed"
         else
             err "Unsupported OS. Install hcloud manually: https://github.com/hetznercloud/cli"
+            exit 1
+        fi
+
+        # Make sure the install actually put hcloud on PATH before continuing —
+        # never fall through to the API steps with no working CLI.
+        if ! command -v hcloud &>/dev/null; then
+            err "hcloud was installed but isn't on your PATH. Open a new shell (or"
+            err "add its install dir to PATH), then re-run this script."
             exit 1
         fi
     fi
@@ -507,9 +523,11 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         USER_LAT=""
         GEO_INFO=$(curl -s --max-time 5 https://ipinfo.io/json 2>/dev/null || true)
         if [[ -n "$GEO_INFO" ]]; then
-            USER_LOC=$(echo "$GEO_INFO" | jq -r '.loc // empty' 2>/dev/null)
-            USER_CITY=$(echo "$GEO_INFO" | jq -r '.city // empty' 2>/dev/null)
-            USER_COUNTRY=$(echo "$GEO_INFO" | jq -r '.country // empty' 2>/dev/null)
+            # `|| true`: geo-IP is best-effort. If ipinfo returns non-JSON, don't
+            # let jq's failure abort the run under `set -e` — just skip the hint.
+            USER_LOC=$(echo "$GEO_INFO" | jq -r '.loc // empty' 2>/dev/null || true)
+            USER_CITY=$(echo "$GEO_INFO" | jq -r '.city // empty' 2>/dev/null || true)
+            USER_COUNTRY=$(echo "$GEO_INFO" | jq -r '.country // empty' 2>/dev/null || true)
             if [[ -n "$USER_LOC" ]]; then
                 USER_LAT=$(echo "$USER_LOC" | cut -d, -f1)
                 USER_LON=$(echo "$USER_LOC" | cut -d, -f2)
@@ -533,8 +551,8 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
 
             # Calculate rough distance if we have user coordinates
             if [[ -n "$USER_LAT" && -n "$USER_LON" ]]; then
-                LOC_LAT=$(echo "$LOC_JSON" | jq -r '.latitude // empty')
-                LOC_LON=$(echo "$LOC_JSON" | jq -r '.longitude // empty')
+                LOC_LAT=$(echo "$LOC_JSON" | jq -r '.latitude // empty' 2>/dev/null || true)
+                LOC_LON=$(echo "$LOC_JSON" | jq -r '.longitude // empty' 2>/dev/null || true)
                 if [[ -n "$LOC_LAT" && -n "$LOC_LON" ]]; then
                     # Simple Euclidean distance on lat/lon (good enough for ranking)
                     DIST=$(awk "BEGIN { printf \"%.0f\", sqrt(($USER_LAT - $LOC_LAT)^2 + ($USER_LON - $LOC_LON)^2) * 111 }")
