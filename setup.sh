@@ -259,7 +259,19 @@ else
 
     if [[ -n "$TS_AUTHKEY" ]]; then
         info "Connecting Tailscale with the provided auth key (non-interactive)..."
-        tailscale up --authkey="$TS_AUTHKEY"
+        # Hand the key to tailscale via a file (the `file:` prefix) so it never
+        # shows up in the process list. tailscale up runs as root, so the file
+        # stays root-only at 0600. Clean it up whether the connect succeeds or not.
+        TS_KEY_FILE=$(mktemp)
+        chmod 600 "$TS_KEY_FILE"
+        printf '%s' "$TS_AUTHKEY" > "$TS_KEY_FILE"
+        if tailscale up --auth-key="file:$TS_KEY_FILE"; then
+            rm -f "$TS_KEY_FILE"
+        else
+            rm -f "$TS_KEY_FILE"
+            err "Tailscale rejected the auth key. Check it's valid and not expired or already consumed."
+            exit 1
+        fi
     else
         info "Starting Tailscale — follow the auth URL below:"
         echo ""
@@ -291,9 +303,17 @@ elif [[ -n "$GH_TOKEN" ]]; then
     chmod 600 "$GH_TOKEN_FILE"
     printf '%s\n' "$GH_TOKEN" > "$GH_TOKEN_FILE"
     chown "$NEW_USER:$NEW_USER" "$GH_TOKEN_FILE"
-    run_as_user "gh auth login --with-token < $GH_TOKEN_FILE"
-    rm -f "$GH_TOKEN_FILE"
-    ok "GitHub authenticated via token"
+    # Remove the token file whether the login succeeds or fails — testing the
+    # result inside `if` keeps set -e from aborting before we can clean up.
+    if run_as_user "gh auth login --with-token < $GH_TOKEN_FILE"; then
+        rm -f "$GH_TOKEN_FILE"
+        ok "GitHub authenticated via token"
+    else
+        rm -f "$GH_TOKEN_FILE"
+        err "GitHub token authentication failed."
+        err "Check the token is valid and has repo + read:packages scopes."
+        exit 1
+    fi
 else
     echo "  Agent Manager needs read access to the okthink-ai GitHub repos."
     echo "  You can use your main GitHub account, or a secondary account"

@@ -34,6 +34,10 @@ MIN_RAM_GB=8
 # and selection prompts use their defaults — for unattended/automated runs.
 BYPASS_CONSENT=false
 
+# Explicit region (set by --location). Overrides the location prompt and the
+# geo-IP suggestion. Lets unattended runs pin a region when geo-IP can't.
+LOCATION_OVERRIDE=""
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -56,9 +60,12 @@ Provision a Hetzner VPS for Agent Manager.
 
 Options:
   -y, --bypass-consent   Run unattended: accept every consent prompt and use
-                         default choices (suggested location, cheapest server
+                         default choices (nearest location, cheapest server
                          type). Needs a Hetzner token already configured — via
                          the saved hcloud context or the HCLOUD_TOKEN env var.
+      --location <name>  Region to provision in (e.g. fsn1, ash, hel1). Skips
+                         the location prompt; pair with --bypass-consent when
+                         geo-IP can't detect your nearest region.
   -h, --help             Show this help and exit.
 EOF
 }
@@ -67,6 +74,11 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -y|--bypass-consent|--yes) BYPASS_CONSENT=true ;;
+        --location)
+            LOCATION_OVERRIDE="${2:-}"
+            [[ -z "$LOCATION_OVERRIDE" ]] && { err "--location needs a value (e.g. --location fsn1)"; exit 1; }
+            shift ;;
+        --location=*) LOCATION_OVERRIDE="${1#*=}" ;;
         -h|--help) usage; exit 0 ;;
         *) err "Unknown option: $1"; echo "" >&2; usage >&2; exit 1 ;;
     esac
@@ -546,10 +558,26 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
             PROMPT="Choose a location [$SUGGESTED]"
         fi
 
-        if [[ "$BYPASS_CONSENT" == true ]]; then
-            # Prefer the nearest suggested region; fall back to the first available.
-            LOCATION="${SUGGESTED:-$(echo "$AVAILABLE_LOCATIONS" | head -1)}"
-            ok "Using location: $LOCATION  (auto, --bypass-consent)"
+        if [[ -n "$LOCATION_OVERRIDE" ]]; then
+            # Explicit --location wins, for both interactive and unattended runs.
+            if ! echo "$AVAILABLE_LOCATIONS" | grep -qw "$LOCATION_OVERRIDE"; then
+                err "Location '$LOCATION_OVERRIDE' (from --location) has no qualifying server type."
+                err "Available: $(echo $AVAILABLE_LOCATIONS | tr '\n' ' ')"
+                exit 1
+            fi
+            LOCATION="$LOCATION_OVERRIDE"
+            ok "Using location: $LOCATION  (from --location)"
+        elif [[ "$BYPASS_CONSENT" == true ]]; then
+            # Unattended: use the nearest detected region. Never guess — if
+            # geo-IP found nothing, stop rather than provision in a random region.
+            if [[ -z "$SUGGESTED" ]]; then
+                err "Can't auto-pick a location: geo-IP detection returned no region."
+                err "Re-run with an explicit region, e.g.:  --bypass-consent --location fsn1"
+                err "Available: $(echo $AVAILABLE_LOCATIONS | tr '\n' ' ')"
+                exit 1
+            fi
+            LOCATION="$SUGGESTED"
+            ok "Using nearest location: $LOCATION  (auto, --bypass-consent)"
         else
             while true; do
                 echo ""

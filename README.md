@@ -41,6 +41,12 @@ For unattended/automated runs, pass `--bypass-consent` (alias `-y`): every conse
 bash provision.sh --bypass-consent
 ```
 
+Unattended runs pick the region nearest you via geo-IP. If geo-IP can't detect your location (for example, behind a CI egress firewall), the run stops rather than guess — pass an explicit region instead:
+
+```bash
+bash provision.sh --bypass-consent --location fsn1
+```
+
 **The one manual step: a Hetzner API token.** Hetzner has no API to create a project or mint a token, so this can't be automated — you paste a token once and it's saved and reused on every later run. You don't need to create a new project: Hetzner gives you a **Default** project at signup, and any existing project works. In the Console, open a project → Security → API Tokens → Generate (Read & Write). The script can open the Console for you.
 
 ### 2. SSH into the server and run the setup script
@@ -64,11 +70,13 @@ After SSH hardening, setup switches to the non-root user for everything that fol
 
 **Optional extra CLIs.** After Claude Code, setup offers to install [OpenAI Codex](https://developers.openai.com/codex/cli) (`@openai/codex`), [Google Gemini CLI](https://www.npmjs.com/package/@google/gemini-cli) (`@google/gemini-cli`), and [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). Install whichever you have accounts/keys for — each prints its own auth hint and a failed install is skipped, not fatal.
 
-**Unattended setup.** GitHub and Tailscale can authenticate without a browser. Export a [Tailscale auth key](https://login.tailscale.com/admin/settings/keys) and/or a [GitHub PAT](https://github.com/settings/tokens) (with `repo` + `read:packages`) before running, and setup uses them instead of the interactive login:
+**Non-interactive auth.** The GitHub and Tailscale logins can skip the browser. Export a [Tailscale auth key](https://login.tailscale.com/admin/settings/keys) and/or a [GitHub PAT](https://github.com/settings/tokens) (with `repo` + `read:packages`) before running, and setup uses them instead of the interactive login:
 
 ```bash
 TS_AUTHKEY=tskey-... GH_TOKEN=ghp_... bash setup.sh
 ```
+
+This removes the two browser logins only — `setup.sh` is not a fully hands-off run. It still prompts for the username, git identity, the SSH-access safety check, Claude Code auth, the optional-CLI choices, and whether to start the server, so keep a terminal attached.
 
 ## Requirements
 
