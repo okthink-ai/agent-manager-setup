@@ -123,6 +123,43 @@ open_url() {
     return 0
 }
 
+# Detect the system package manager, for auto-installing missing tools.
+detect_pkg_mgr() {
+    if   command -v apt-get &>/dev/null; then echo apt
+    elif command -v dnf     &>/dev/null; then echo dnf
+    elif command -v yum     &>/dev/null; then echo yum
+    elif command -v brew    &>/dev/null; then echo brew
+    elif command -v pacman  &>/dev/null; then echo pacman
+    elif command -v zypper  &>/dev/null; then echo zypper
+    fi
+}
+
+# Map a required command to its package name for the given manager. Most match
+# the command name; the exceptions are the ssh tools and the coreutils set.
+pkg_for_cmd() {  # pkg_for_cmd <cmd> <mgr>
+    case "$1" in
+        ssh|scp|ssh-keygen)
+            case "$2" in apt) echo openssh-client ;; dnf|yum) echo openssh-clients ;; *) echo openssh ;; esac ;;
+        awk)                 echo gawk ;;
+        sort|cut|paste|head) echo coreutils ;;
+        *)                   echo "$1" ;;
+    esac
+}
+
+# Install packages with the detected manager (sudo where the OS needs it).
+install_pkgs() {  # install_pkgs <mgr> <pkg...>
+    local mgr="$1"; shift
+    case "$mgr" in
+        apt)    sudo apt-get update -qq && sudo apt-get install -y "$@" ;;
+        dnf)    sudo dnf install -y "$@" ;;
+        yum)    sudo yum install -y "$@" ;;
+        brew)   brew install "$@" ;;
+        pacman) sudo pacman -S --noconfirm "$@" ;;
+        zypper) sudo zypper install -y "$@" ;;
+        *)      return 1 ;;
+    esac
+}
+
 # Cute bodega-style splash — an ASCII rendering of the "bodega" wordmark. Pure
 # decoration; never let it abort the run. The art prints via a quoted heredoc
 # so its $ # % * characters are all literal (no escaping needed).
@@ -167,13 +204,47 @@ for cmd in "${REQUIRED_CMDS[@]}"; do
     command -v "$cmd" &>/dev/null || MISSING_CMDS+=("$cmd")
 done
 if [[ ${#MISSING_CMDS[@]} -gt 0 ]]; then
-    err "Missing required tools: ${MISSING_CMDS[*]}"
-    echo "" >&2
-    echo "  Install them with your package manager, then re-run. Examples:" >&2
-    echo "    macOS:         brew install ${MISSING_CMDS[*]}" >&2
-    echo "    Debian/Ubuntu: sudo apt-get install -y ${MISSING_CMDS[*]}   (ssh tools: openssh-client)" >&2
-    echo "    Fedora/RHEL:   sudo dnf install -y ${MISSING_CMDS[*]}        (ssh tools: openssh-clients)" >&2
-    exit 1
+    warn "Missing required tools: ${MISSING_CMDS[*]}"
+    PKG_MGR=$(detect_pkg_mgr)
+    if [[ -z "$PKG_MGR" ]]; then
+        err "No supported package manager found (apt/dnf/yum/brew/pacman/zypper)."
+        err "Install these manually and re-run: ${MISSING_CMDS[*]}"
+        exit 1
+    fi
+
+    # Map the missing commands to packages, de-duplicated using only bash
+    # builtins — one of the missing tools could be something we'd normally
+    # dedupe with (e.g. sort), so we can't rely on it here.
+    declare -A _seen_pkg=()
+    INSTALL_PKGS=()
+    for cmd in "${MISSING_CMDS[@]}"; do
+        pkg=$(pkg_for_cmd "$cmd" "$PKG_MGR")
+        [[ -n "${_seen_pkg[$pkg]:-}" ]] || { INSTALL_PKGS+=("$pkg"); _seen_pkg[$pkg]=1; }
+    done
+
+    echo "  They can be installed with $PKG_MGR: ${INSTALL_PKGS[*]}"
+    if ! confirm "Install them now?"; then
+        err "These tools are required. Install them and re-run: ${INSTALL_PKGS[*]}"
+        exit 1
+    fi
+
+    info "Installing: ${INSTALL_PKGS[*]}"
+    if ! install_pkgs "$PKG_MGR" "${INSTALL_PKGS[@]}"; then
+        err "Auto-install failed. Install manually and re-run: ${INSTALL_PKGS[*]}"
+        exit 1
+    fi
+
+    # Confirm every command is now actually on PATH before moving on.
+    STILL_MISSING=()
+    for cmd in "${MISSING_CMDS[@]}"; do
+        command -v "$cmd" &>/dev/null || STILL_MISSING+=("$cmd")
+    done
+    if [[ ${#STILL_MISSING[@]} -gt 0 ]]; then
+        err "Still missing after install: ${STILL_MISSING[*]}"
+        err "Install these manually and re-run."
+        exit 1
+    fi
+    ok "Installed missing tools: ${INSTALL_PKGS[*]}"
 fi
 
 # ─── SSH key ──────────────────────────────────────────────────────────
