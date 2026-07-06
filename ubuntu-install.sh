@@ -66,6 +66,19 @@ load_nvm() {
     fi
 }
 
+# True if something is listening on the given TCP port. Prefers ss (iproute2,
+# present by default); falls back to lsof, which is only an optional package.
+port_listening() {
+    local port="$1"
+    if command -v ss &>/dev/null; then
+        ss -ltn "sport = :$port" 2>/dev/null | grep -q LISTEN
+    elif command -v lsof &>/dev/null; then
+        lsof -i ":$port" -sTCP:LISTEN &>/dev/null
+    else
+        return 1
+    fi
+}
+
 # Install an optional global npm CLI (idempotent). A failed install warns and
 # continues rather than aborting the whole setup.
 #   install_npm_cli <binary> <npm-package> <label> [auth-hint]
@@ -157,7 +170,11 @@ else
     curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
     load_nvm
     info "Installing Node.js 22..."
+    # nvm's functions aren't set -u safe (they reference unset internals like
+    # $STABLE), so drop unset-variable checking just for the nvm call.
+    set +u
     nvm install 22
+    set -u
     ok "Node.js installed: $(node --version)"
 fi
 
@@ -167,6 +184,9 @@ section "3/6  GitHub CLI & Authentication"
 
 if ! command -v gh &>/dev/null; then
     info "Installing GitHub CLI..."
+    # Refresh the index first — the base-packages step above skips apt-get update
+    # when nothing was missing, so gh could otherwise install against a stale index.
+    sudo apt-get update
     sudo apt-get install -y gh
 fi
 
@@ -392,11 +412,18 @@ if [[ "$START_NOW" =~ ^[Yy] ]]; then
     # Single-quote so the pane's shell expands $HOME/$NVM_DIR and sources nvm itself.
     tmux send-keys -t am-server \
         'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '"CM_TERMINAL_ALLOW_LAN=1 PORT=$PORT npx tsx server/index.ts" Enter
-    sleep 3
-    if ( load_nvm; lsof -i ":$PORT" -sTCP:LISTEN ) &>/dev/null; then
+    # Poll for up to ~15s — a first `npx tsx` cold start (transpile + DB/model
+    # init) can take several seconds before the port is listening.
+    info "Waiting for the server to come up..."
+    STARTED=false
+    for _ in $(seq 1 15); do
+        if port_listening "$PORT"; then STARTED=true; break; fi
+        sleep 1
+    done
+    if [[ "$STARTED" == true ]]; then
         ok "Server is running on port $PORT"
     else
-        warn "Server may not have started — check: tmux attach -t am-server"
+        warn "Server didn't come up within 15s — check: tmux attach -t am-server"
     fi
 fi
 
