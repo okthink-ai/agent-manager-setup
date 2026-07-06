@@ -20,8 +20,9 @@
 # firewall/fail2ban/Tailscale — this is your own box.
 #
 # Optional env vars:
-#   GH_TOKEN — a GitHub PAT with repo + read:packages (skips the browser login)
-#   PORT     — server port (default 4801)
+#   GH_TOKEN   — a GitHub PAT with repo + read:packages (skips the browser login)
+#   PORT       — server port (default 4801)
+#   ALLOW_ROOT — set to 1 to run as root (discouraged; for throwaway/isolated boxes)
 #
 # Designed to be idempotent — safe to re-run after a failure.
 #
@@ -51,6 +52,7 @@ section() {
 REPO_URL="https://github.com/okthink-ai/claude-manager.git"
 PORT="${PORT:-4801}"
 GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+ALLOW_ROOT="${ALLOW_ROOT:-}"
 
 # Load NVM into the current shell so node/npm/npx resolve. NVM only wires itself
 # into future *interactive* shells via ~/.bashrc; this script's shell needs it
@@ -101,13 +103,31 @@ install_npm_cli() {
 
 section "Agent Manager — Ubuntu Server Install"
 
+# This script is meant to run as your normal sudo user. As root, everything
+# (Node, git config, Claude Code auth, the checkout) lands under /root and Agent
+# Manager launches its agents as root — best avoided. ALLOW_ROOT=1 overrides this
+# for a throwaway/isolated box.
 if [[ $EUID -eq 0 ]]; then
-    err "Run this as your normal sudo user, NOT as root."
-    err "It uses 'sudo' only for package installs; everything else runs as you."
-    exit 1
+    if [[ "$ALLOW_ROOT" == "1" ]]; then
+        warn "Running as root (ALLOW_ROOT=1). Everything installs under /root and"
+        warn "agents will run as root — only do this on a throwaway/isolated box."
+    else
+        err "Run this as your normal sudo user, NOT as root."
+        err "Everything (Node, auth, the checkout) belongs in a user's home, and"
+        err "Agent Manager would otherwise run its agents as root."
+        err "Create a user first:  adduser myuser && usermod -aG sudo myuser && su - myuser"
+        err "…or set ALLOW_ROOT=1 to override on a throwaway box."
+        exit 1
+    fi
 fi
 
-if ! command -v sudo &>/dev/null; then
+# Use sudo for apt only when we're not already root. Root needs no sudo (and a
+# minimal image may not even have it installed), so $SUDO is empty there.
+if [[ $EUID -eq 0 ]]; then
+    SUDO=""
+elif command -v sudo &>/dev/null; then
+    SUDO="sudo"
+else
     err "'sudo' is required but not found. Install it (as root: apt install sudo)"
     err "and make sure your user is in the sudo group, then re-run."
     exit 1
@@ -174,8 +194,8 @@ else
     info "Missing packages: ${MISSING_PKGS[*]}"
     read -rp "Install them now with apt? (y/n): " WANT_PKGS
     if [[ "$WANT_PKGS" =~ ^[Yy] ]]; then
-        sudo apt-get update
-        sudo apt-get install -y "${MISSING_PKGS[@]}"
+        $SUDO apt-get update
+        $SUDO apt-get install -y "${MISSING_PKGS[@]}"
         ok "Installed: ${MISSING_PKGS[*]}"
     else
         warn "Skipped. Agent Manager may fail to build without: ${MISSING_PKGS[*]}"
@@ -210,8 +230,8 @@ if ! command -v gh &>/dev/null; then
     info "Installing GitHub CLI..."
     # Refresh the index first — the base-packages step above skips apt-get update
     # when nothing was missing, so gh could otherwise install against a stale index.
-    sudo apt-get update
-    sudo apt-get install -y gh
+    $SUDO apt-get update
+    $SUDO apt-get install -y gh
 fi
 
 if gh auth status &>/dev/null; then
