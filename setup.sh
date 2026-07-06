@@ -6,11 +6,19 @@
 #   1. Creates a non-root user and hardens SSH
 #   2. Installs fail2ban
 #   3. Installs system packages, NVM, Node.js 22
-#   4. Installs Tailscale
-#   5. Installs GitHub CLI and authenticates
-#   6. Installs Claude Code
-#   7. Clones Agent Manager and installs dependencies
+#   4. Installs Tailscale (interactive, or TS_AUTHKEY for non-interactive)
+#   5. Installs GitHub CLI and authenticates (interactive, or GH_TOKEN)
+#   6. Installs Claude Code; optionally Codex / Gemini / Pi CLIs
+#   7. Clones Agent Manager and installs dependencies — all as the non-root user
 #   8. Prints a summary with access URLs
+#
+# After SSH hardening, the script switches to the new non-root user for all
+# application work (auth, checkout, build, server). Only apt and `tailscale up`
+# still use root.
+#
+# Optional env vars for unattended runs:
+#   TS_AUTHKEY  — Tailscale auth key (skips the browser login)
+#   GH_TOKEN    — GitHub PAT with repo + read:packages (skips the browser login)
 #
 # Designed to be idempotent — safe to re-run after a failure.
 #
@@ -65,8 +73,18 @@ read -rp "Git email (for commits): " GIT_EMAIL
 
 REPO_URL="https://github.com/okthink-ai/claude-manager.git"
 
+# Optional non-interactive auth. Export these before running to skip the
+# browser/device flows (e.g. for unattended setup):
+#   TS_AUTHKEY     — a Tailscale auth key (tskey-…) for `tailscale up --authkey`
+#   GH_TOKEN       — a GitHub PAT with repo + read:packages scopes
+# When unset, the script falls back to the interactive login for that service.
+TS_AUTHKEY="${TS_AUTHKEY:-${TAILSCALE_AUTHKEY:-}}"
+GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+
 echo ""
 info "Will create user '$NEW_USER' and install everything under /home/$NEW_USER"
+[[ -n "$TS_AUTHKEY" ]] && ok "Tailscale auth key detected — will connect non-interactively"
+[[ -n "$GH_TOKEN" ]]   && ok "GitHub token detected — will authenticate non-interactively"
 echo ""
 
 # ─── 1. System update + packages ─────────────────────────────────────
@@ -172,12 +190,43 @@ fi
 
 fail2ban-client status sshd 2>/dev/null || true
 
-# ─── From here on, everything runs as the new user ────────────────────
-# We use `su - $NEW_USER -c "..."` to run commands in the user's login shell.
+# ─── Switchover: drop into the non-root user for the rest of setup ────
+# Everything from here — language runtimes, GitHub/AI auth, the Agent Manager
+# checkout, the build, and the server process — runs as "$NEW_USER", never as
+# root. We do it with `su - $NEW_USER -c "..."` so each command runs in the
+# user's own login shell and writes to their home. The only things that still
+# use root are system-level package installs (apt) and `tailscale up`, which
+# require it; those are called out where they happen.
 
 run_as_user() {
     su - "$NEW_USER" -c "$1"
 }
+
+# Install an optional global npm CLI as the new user (idempotent). A failed
+# install warns and continues rather than aborting the whole setup.
+#   install_npm_cli <binary> <npm-package> <label> [auth-hint]
+install_npm_cli() {
+    local bin="$1" pkg="$2" label="$3" auth="${4:-}"
+    local nvm='export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" &&'
+    if run_as_user "$nvm command -v $bin" &>/dev/null; then
+        ok "$label already installed"
+    elif run_as_user "$nvm npm install -g $pkg"; then
+        ok "$label installed"
+    else
+        warn "$label install failed — skipping. Install later with: npm install -g $pkg"
+        return 0
+    fi
+    [[ -n "$auth" ]] && echo "    auth: $auth"
+    return 0
+}
+
+# ─── Switchover announcement ─────────────────────────────────────────
+
+section "Switching to user '$NEW_USER'"
+echo "  Root-level system setup is done. Everything below — Node, GitHub/AI"
+echo "  auth, the Agent Manager checkout, the build, and the running server —"
+echo "  now happens as '$NEW_USER', not root. (apt installs and 'tailscale up'"
+echo "  still use root where the OS requires it.)"
 
 # ─── 4. NVM + Node.js ────────────────────────────────────────────────
 
@@ -208,10 +257,27 @@ else
     info "Installing Tailscale..."
     curl -fsSL https://tailscale.com/install.sh | sh
 
-    info "Starting Tailscale — follow the auth URL below:"
-    echo ""
-    tailscale up
-    echo ""
+    if [[ -n "$TS_AUTHKEY" ]]; then
+        info "Connecting Tailscale with the provided auth key (non-interactive)..."
+        # Hand the key to tailscale via a file (the `file:` prefix) so it never
+        # shows up in the process list. tailscale up runs as root, so the file
+        # stays root-only at 0600. Clean it up whether the connect succeeds or not.
+        TS_KEY_FILE=$(mktemp)
+        chmod 600 "$TS_KEY_FILE"
+        printf '%s' "$TS_AUTHKEY" > "$TS_KEY_FILE"
+        if tailscale up --auth-key="file:$TS_KEY_FILE"; then
+            rm -f "$TS_KEY_FILE"
+        else
+            rm -f "$TS_KEY_FILE"
+            err "Tailscale rejected the auth key. Check it's valid and not expired or already consumed."
+            exit 1
+        fi
+    else
+        info "Starting Tailscale — follow the auth URL below:"
+        echo ""
+        tailscale up
+        echo ""
+    fi
 
     TAILSCALE_IP=$(tailscale ip -4)
     ok "Tailscale connected: $TAILSCALE_IP"
@@ -229,23 +295,51 @@ fi
 # Check if already authenticated
 if run_as_user "gh auth status" &>/dev/null; then
     ok "GitHub CLI already authenticated"
+elif [[ -n "$GH_TOKEN" ]]; then
+    info "Authenticating with GitHub using the provided token (non-interactive)..."
+    # Hand the token to gh via a user-owned temp file so it never appears in a
+    # command line / process list (ps), only on disk briefly with 0600 perms.
+    GH_TOKEN_FILE=$(mktemp)
+    chmod 600 "$GH_TOKEN_FILE"
+    printf '%s\n' "$GH_TOKEN" > "$GH_TOKEN_FILE"
+    chown "$NEW_USER:$NEW_USER" "$GH_TOKEN_FILE"
+    # Remove the token file whether the login succeeds or fails — testing the
+    # result inside `if` keeps set -e from aborting before we can clean up.
+    if run_as_user "gh auth login --with-token < $GH_TOKEN_FILE"; then
+        rm -f "$GH_TOKEN_FILE"
+        ok "GitHub authenticated via token"
+    else
+        rm -f "$GH_TOKEN_FILE"
+        err "GitHub token authentication failed."
+        err "Check the token is valid and has repo + read:packages scopes."
+        exit 1
+    fi
 else
     echo "  Agent Manager needs read access to the okthink-ai GitHub repos."
     echo "  You can use your main GitHub account, or a secondary account"
     echo "  if you prefer to limit access on this server."
     echo ""
-    echo "  When the browser opens, make sure you're logged into the"
-    echo "  GitHub account you want to use before approving."
+    echo "  This is a headless server with no browser. gh will print a one-time"
+    echo "  code and a URL — open the URL ON YOUR LAPTOP, enter the code, and make"
+    echo "  sure you're signed into the right GitHub account before approving."
+    echo "  (To skip this step entirely, re-run with GH_TOKEN=<your PAT> set.)"
     echo ""
-    info "Authenticating with GitHub via SSH..."
+    info "Authenticating with GitHub..."
     echo ""
-    run_as_user "gh auth login -p ssh"
+    # No GUI browser here, so xdg-open just errors out. Point gh's browser at
+    # `echo` instead — it prints the auth URL for you to open on your laptop.
+    run_as_user "BROWSER=echo gh auth login -p ssh"
     echo ""
 fi
 
-# Add read:packages scope
-info "Ensuring read:packages scope..."
-run_as_user "gh auth refresh -h github.com -s read:packages"
+# Ensure read:packages scope. OAuth logins can refresh to add it; a PAT carries
+# its own scopes, so we only refresh when we didn't authenticate with a token.
+if [[ -n "$GH_TOKEN" ]]; then
+    info "Using the token's existing scopes (PAT must include repo + read:packages)."
+else
+    info "Ensuring read:packages scope..."
+    run_as_user "gh auth refresh -h github.com -s read:packages"
+fi
 
 # Wire gh as git credential helper (needed for HTTPS git-URL deps in package.json)
 info "Setting up git credential helper..."
@@ -320,6 +414,27 @@ echo "  permission prompts, which is how Agent Manager launches sessions."
 echo "  Follow the OAuth URL, accept the YOLO-mode prompt, then /exit."
 echo ""
 read -rp "  Press Enter after authenticating Claude Code (or Enter to skip)... "
+
+# ─── Optional: other AI coding CLIs ──────────────────────────────────
+
+section "Optional: Other AI Coding CLIs"
+
+echo "  Agent Manager can drive other terminal coding agents too. Install any"
+echo "  you have accounts or API keys for — skip the rest, you can add them later."
+echo "  Each still needs its own auth (shown after install)."
+echo ""
+
+read -rp "Install OpenAI Codex CLI? (y/n): " WANT_CODEX
+[[ "$WANT_CODEX" =~ ^[Yy] ]] && install_npm_cli codex "@openai/codex" "Codex CLI" \
+    "run 'codex' and sign in, or set OPENAI_API_KEY"
+
+read -rp "Install Google Gemini CLI? (y/n): " WANT_GEMINI
+[[ "$WANT_GEMINI" =~ ^[Yy] ]] && install_npm_cli gemini "@google/gemini-cli" "Gemini CLI" \
+    "run 'gemini' and sign in with Google, or set GEMINI_API_KEY"
+
+read -rp "Install Pi coding agent (pi.dev)? (y/n): " WANT_PI
+[[ "$WANT_PI" =~ ^[Yy] ]] && install_npm_cli pi "@earendil-works/pi-coding-agent" "Pi coding agent" \
+    "run 'pi' and follow the prompts, or set your provider API key"
 
 # ─── 8. Clone Agent Manager ──────────────────────────────────────────
 
