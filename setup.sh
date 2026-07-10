@@ -454,8 +454,8 @@ read -rp "Install Pi coding agent (pi.dev)? (y/n): " WANT_PI
 # none is.
 if ! run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && { command -v claude || command -v codex || command -v gemini || command -v pi; }' &>/dev/null; then
     warn "No AI coding agent is installed. Agent Manager will run, but sessions"
-    warn "won't work until you install at least one, e.g.:"
-    warn "  npm install -g @anthropic-ai/claude-code   (or @openai/codex, @google/gemini-cli)"
+    warn "won't work until you install one — re-run this script and answer yes to"
+    warn "an agent (it also configures settings and walks you through auth)."
 fi
 
 # ─── 8. Clone Agent Manager ──────────────────────────────────────────

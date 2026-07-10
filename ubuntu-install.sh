@@ -351,8 +351,8 @@ read -rp "Install Pi coding agent (pi.dev)? (y/n): " WANT_PI
 # PATH (covers pre-installed agents too), and warn — don't abort — if none is.
 if ! ( load_nvm; command -v claude || command -v codex || command -v gemini || command -v pi ) &>/dev/null; then
     warn "No AI coding agent is installed. Agent Manager will run, but sessions"
-    warn "won't work until you install at least one, e.g.:"
-    warn "  npm install -g @anthropic-ai/claude-code   (or @openai/codex, @google/gemini-cli)"
+    warn "won't work until you install one — re-run this script and answer yes to"
+    warn "an agent (it also configures settings and walks you through auth)."
 fi
 
 # ─── 5. Clone & build Agent Manager ──────────────────────────────────
@@ -461,23 +461,32 @@ section "6/6  Start the Server"
 
 read -rp "Start the server now in a tmux session? (y/n): " START_NOW
 if [[ "$START_NOW" =~ ^[Yy] ]]; then
-    info "Starting server in tmux session 'am-server'..."
-    tmux new-session -d -s am-server -c "$INSTALL_DIR"
-    # Single-quote so the pane's shell expands $HOME/$NVM_DIR and sources nvm itself.
-    tmux send-keys -t am-server \
-        'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '"$LAUNCH_ENV npx tsx server/index.ts" Enter
-    # Poll for up to ~15s — a first `npx tsx` cold start (transpile + DB/model
-    # init) can take several seconds before the port is listening.
-    info "Waiting for the server to come up..."
-    STARTED=false
-    for _ in $(seq 1 15); do
-        if port_listening "$PORT"; then STARTED=true; break; fi
-        sleep 1
-    done
-    if [[ "$STARTED" == true ]]; then
-        ok "Server is running on port $PORT"
+    # Re-runs: never create the session twice — a duplicate `tmux new-session`
+    # fails hard and set -e would kill the script right before the summary.
+    if port_listening "$PORT"; then
+        ok "Server is already running on port $PORT"
+    elif tmux has-session -t am-server 2>/dev/null; then
+        warn "tmux session 'am-server' already exists but nothing is listening on :$PORT."
+        warn "Attach to see what happened: tmux attach -t am-server"
     else
-        warn "Server didn't come up within 15s — check: tmux attach -t am-server"
+        info "Starting server in tmux session 'am-server'..."
+        tmux new-session -d -s am-server -c "$INSTALL_DIR"
+        # Single-quote so the pane's shell expands $HOME/$NVM_DIR and sources nvm itself.
+        tmux send-keys -t am-server \
+            'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '"$LAUNCH_ENV npx tsx server/index.ts" Enter
+        # Poll for up to ~15s — a first `npx tsx` cold start (transpile + DB/model
+        # init) can take several seconds before the port is listening.
+        info "Waiting for the server to come up..."
+        STARTED=false
+        for _ in $(seq 1 15); do
+            if port_listening "$PORT"; then STARTED=true; break; fi
+            sleep 1
+        done
+        if [[ "$STARTED" == true ]]; then
+            ok "Server is running on port $PORT"
+        else
+            warn "Server didn't come up within 15s — check: tmux attach -t am-server"
+        fi
     fi
 fi
 
