@@ -10,7 +10,7 @@
 #   1. Checks Homebrew and installs any missing base tools (git, tmux, gh)
 #   2. Installs NVM + Node.js 22
 #   3. Authenticates GitHub CLI (interactive, or GH_TOKEN)
-#   4. Installs Claude Code; optionally Codex / Gemini / Pi CLIs
+#   4. Installs the AI coding agents you choose — Claude Code, Codex, Gemini, Pi
 #   5. Clones Agent Manager into a directory you choose and builds it (prod mode)
 #   6. Optionally starts the server in a tmux session
 #
@@ -252,43 +252,56 @@ fi
 
 section "4/6  Claude Code"
 
+echo "  Agent Manager can drive Claude Code, Codex, Gemini, or Pi — install any"
+echo "  combination (Claude Code is the default; the others are offered next)."
+echo ""
+
+WANT_CLAUDE=y
 if ( load_nvm; command -v claude ) &>/dev/null; then
     ok "Claude Code already installed: $( ( load_nvm; claude --version ) 2>/dev/null || echo unknown)"
 else
-    info "Installing Claude Code..."
-    ( load_nvm; npm install -g @anthropic-ai/claude-code )
-    ok "Claude Code installed"
+    read -rp "Install Claude Code? (Y/n): " WANT_CLAUDE
+    WANT_CLAUDE="${WANT_CLAUDE:-y}"
+    if [[ "$WANT_CLAUDE" =~ ^[Yy] ]]; then
+        info "Installing Claude Code..."
+        ( load_nvm; npm install -g @anthropic-ai/claude-code )
+        ok "Claude Code installed"
+    else
+        warn "Skipping Claude Code — pick at least one agent in the next step."
+    fi
 fi
 
-# Skip the YOLO-mode consent prompt — but never clobber existing settings.
-CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-if [[ -f "$CLAUDE_SETTINGS" ]]; then
-    if grep -q "skipDangerousModePermissionPrompt" "$CLAUDE_SETTINGS" 2>/dev/null; then
-        ok "skipDangerousModePermissionPrompt already set"
+if [[ "$WANT_CLAUDE" =~ ^[Yy] ]]; then
+    # Skip the YOLO-mode consent prompt — but never clobber existing settings.
+    CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+    if [[ -f "$CLAUDE_SETTINGS" ]]; then
+        if grep -q "skipDangerousModePermissionPrompt" "$CLAUDE_SETTINGS" 2>/dev/null; then
+            ok "skipDangerousModePermissionPrompt already set"
+        else
+            warn "~/.claude/settings.json exists but lacks skipDangerousModePermissionPrompt."
+            warn "Add it manually if you want unattended YOLO-mode launches."
+        fi
     else
-        warn "~/.claude/settings.json exists but lacks skipDangerousModePermissionPrompt."
-        warn "Add it manually if you want unattended YOLO-mode launches."
-    fi
-else
-    info "Creating ~/.claude/settings.json..."
-    mkdir -p "$HOME/.claude"
-    cat > "$CLAUDE_SETTINGS" <<'EOF'
+        info "Creating ~/.claude/settings.json..."
+        mkdir -p "$HOME/.claude"
+        cat > "$CLAUDE_SETTINGS" <<'EOF'
 {
   "skipDangerousModePermissionPrompt": true
 }
 EOF
-    ok "Claude Code settings configured"
-fi
+        ok "Claude Code settings configured"
+    fi
 
-echo ""
-info "Claude Code needs to be authenticated. If you already use Claude Code on"
-info "this Mac, you're set — just press Enter. Otherwise, in another terminal run:"
-echo ""
-printf "  ${CYAN}claude --dangerously-skip-permissions${NC}\n"
-echo ""
-echo "  Follow the OAuth URL, accept the YOLO-mode prompt, then /exit."
-echo ""
-read -rp "  Press Enter to continue... "
+    echo ""
+    info "Claude Code needs to be authenticated. If you already use Claude Code on"
+    info "this Mac, you're set — just press Enter. Otherwise, in another terminal run:"
+    echo ""
+    printf "  ${CYAN}claude --dangerously-skip-permissions${NC}\n"
+    echo ""
+    echo "  Follow the OAuth URL, accept the YOLO-mode prompt, then /exit."
+    echo ""
+    read -rp "  Press Enter to continue... "
+fi
 
 # ─── Optional: other AI coding CLIs ──────────────────────────────────
 
@@ -309,6 +322,14 @@ read -rp "Install Google Gemini CLI? (y/n): " WANT_GEMINI
 read -rp "Install Pi coding agent (pi.dev)? (y/n): " WANT_PI
 [[ "$WANT_PI" =~ ^[Yy] ]] && install_npm_cli pi "@earendil-works/pi-coding-agent" "Pi coding agent" \
     "run 'pi' and follow the prompts, or set your provider API key"
+
+# Agent Manager needs at least one agent CLI to drive. Check what's actually on
+# PATH (covers pre-installed agents too), and warn — don't abort — if none is.
+if ! ( load_nvm; command -v claude || command -v codex || command -v gemini || command -v pi ) &>/dev/null; then
+    warn "No AI coding agent is installed. Agent Manager will run, but sessions"
+    warn "won't work until you install at least one, e.g.:"
+    warn "  npm install -g @anthropic-ai/claude-code   (or @openai/codex, @google/gemini-cli)"
+fi
 
 # ─── 5. Clone & build Agent Manager ──────────────────────────────────
 

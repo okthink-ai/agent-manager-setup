@@ -8,7 +8,7 @@
 #   3. Installs system packages, NVM, Node.js 22
 #   4. Installs Tailscale (interactive, or TS_AUTHKEY for non-interactive)
 #   5. Installs GitHub CLI and authenticates (interactive, or GH_TOKEN)
-#   6. Installs Claude Code; optionally Codex / Gemini / Pi CLIs
+#   6. Installs the AI coding agents you choose — Claude Code, Codex, Gemini, Pi
 #   7. Clones Agent Manager and installs dependencies — all as the non-root user
 #   8. Prints a summary with access URLs
 #
@@ -367,53 +367,66 @@ run_as_user "bash $GIT_SCRIPT"
 rm -f "$GIT_SCRIPT"
 ok "Git configured: $GIT_NAME <$GIT_EMAIL>"
 
-# ─── 7. Claude Code ──────────────────────────────────────────────────
+# ─── 7. Claude Code (optional, recommended) ──────────────────────────
 
 section "7/8  Claude Code"
 
+echo "  Agent Manager can drive Claude Code, Codex, Gemini, or Pi — install any"
+echo "  combination (Claude Code is the default; the others are offered next)."
+echo ""
+
+WANT_CLAUDE=y
 if run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && command -v claude' &>/dev/null; then
     CLAUDE_VERSION=$(run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && claude --version' 2>/dev/null || echo "unknown")
     ok "Claude Code already installed: $CLAUDE_VERSION"
 else
-    info "Installing Claude Code..."
-    run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && npm install -g @anthropic-ai/claude-code'
-    ok "Claude Code installed"
+    read -rp "Install Claude Code? (Y/n): " WANT_CLAUDE
+    WANT_CLAUDE="${WANT_CLAUDE:-y}"
+    if [[ "$WANT_CLAUDE" =~ ^[Yy] ]]; then
+        info "Installing Claude Code..."
+        run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && npm install -g @anthropic-ai/claude-code'
+        ok "Claude Code installed"
+    else
+        warn "Skipping Claude Code — pick at least one agent in the next step."
+    fi
 fi
 
-# Skip the YOLO-mode consent prompt
-CLAUDE_SETTINGS="/home/$NEW_USER/.claude/settings.json"
-if [[ -f "$CLAUDE_SETTINGS" ]]; then
-    # Check if setting already exists
-    if grep -q "skipDangerousModePermissionPrompt" "$CLAUDE_SETTINGS" 2>/dev/null; then
-        ok "skipDangerousModePermissionPrompt already set"
+if [[ "$WANT_CLAUDE" =~ ^[Yy] ]]; then
+    # Skip the YOLO-mode consent prompt
+    CLAUDE_SETTINGS="/home/$NEW_USER/.claude/settings.json"
+    if [[ -f "$CLAUDE_SETTINGS" ]]; then
+        # Check if setting already exists
+        if grep -q "skipDangerousModePermissionPrompt" "$CLAUDE_SETTINGS" 2>/dev/null; then
+            ok "skipDangerousModePermissionPrompt already set"
+        else
+            warn "~/.claude/settings.json exists but doesn't have skipDangerousModePermissionPrompt."
+            warn "Add it manually if you want unattended YOLO-mode launches."
+        fi
     else
-        warn "~/.claude/settings.json exists but doesn't have skipDangerousModePermissionPrompt."
-        warn "Add it manually if you want unattended YOLO-mode launches."
-    fi
-else
-    info "Creating ~/.claude/settings.json..."
-    mkdir -p "/home/$NEW_USER/.claude"
-    cat > "$CLAUDE_SETTINGS" <<'EOF'
+        info "Creating ~/.claude/settings.json..."
+        mkdir -p "/home/$NEW_USER/.claude"
+        cat > "$CLAUDE_SETTINGS" <<'EOF'
 {
   "skipDangerousModePermissionPrompt": true
 }
 EOF
-    chown -R "$NEW_USER:$NEW_USER" "/home/$NEW_USER/.claude"
-    chmod 700 "/home/$NEW_USER/.claude"
-    ok "Claude Code settings configured"
-fi
+        chown -R "$NEW_USER:$NEW_USER" "/home/$NEW_USER/.claude"
+        chmod 700 "/home/$NEW_USER/.claude"
+        ok "Claude Code settings configured"
+    fi
 
-echo ""
-info "Claude Code needs to authenticate. In a separate terminal on your laptop:"
-echo ""
-printf "  ${CYAN}ssh -i ~/.ssh/agent_manager %s@%s${NC}\n" "$NEW_USER" "$(hostname -I | awk '{print $1}')"
-printf "  ${CYAN}claude --dangerously-skip-permissions${NC}\n"
-echo ""
-echo "  Using --dangerously-skip-permissions lets Claude Code run without"
-echo "  permission prompts, which is how Agent Manager launches sessions."
-echo "  Follow the OAuth URL, accept the YOLO-mode prompt, then /exit."
-echo ""
-read -rp "  Press Enter after authenticating Claude Code (or Enter to skip)... "
+    echo ""
+    info "Claude Code needs to authenticate. In a separate terminal on your laptop:"
+    echo ""
+    printf "  ${CYAN}ssh -i ~/.ssh/agent_manager %s@%s${NC}\n" "$NEW_USER" "$(hostname -I | awk '{print $1}')"
+    printf "  ${CYAN}claude --dangerously-skip-permissions${NC}\n"
+    echo ""
+    echo "  Using --dangerously-skip-permissions lets Claude Code run without"
+    echo "  permission prompts, which is how Agent Manager launches sessions."
+    echo "  Follow the OAuth URL, accept the YOLO-mode prompt, then /exit."
+    echo ""
+    read -rp "  Press Enter after authenticating Claude Code (or Enter to skip)... "
+fi
 
 # ─── Optional: other AI coding CLIs ──────────────────────────────────
 
@@ -435,6 +448,15 @@ read -rp "Install Google Gemini CLI? (y/n): " WANT_GEMINI
 read -rp "Install Pi coding agent (pi.dev)? (y/n): " WANT_PI
 [[ "$WANT_PI" =~ ^[Yy] ]] && install_npm_cli pi "@earendil-works/pi-coding-agent" "Pi coding agent" \
     "run 'pi' and follow the prompts, or set your provider API key"
+
+# Agent Manager needs at least one agent CLI to drive. Check what's actually on
+# the user's PATH (covers pre-installed agents too), and warn — don't abort — if
+# none is.
+if ! run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && { command -v claude || command -v codex || command -v gemini || command -v pi; }' &>/dev/null; then
+    warn "No AI coding agent is installed. Agent Manager will run, but sessions"
+    warn "won't work until you install at least one, e.g.:"
+    warn "  npm install -g @anthropic-ai/claude-code   (or @openai/codex, @google/gemini-cli)"
+fi
 
 # ─── 8. Clone Agent Manager ──────────────────────────────────────────
 
@@ -587,12 +609,14 @@ else
     STEP=$((STEP + 1))
 fi
 
-echo ""
-printf "  ${STEP}. Start a Claude Code session in tmux:\n"
-echo ""
-printf "     ${CYAN}tmux new-session -d -s my-project -c ~/dev/my-project${NC}\n"
-printf "     ${CYAN}tmux send-keys -t my-project 'claude --dangerously-skip-permissions' Enter${NC}\n"
-echo ""
+if [[ "$WANT_CLAUDE" =~ ^[Yy] ]]; then
+    echo ""
+    printf "  ${STEP}. Start a Claude Code session in tmux:\n"
+    echo ""
+    printf "     ${CYAN}tmux new-session -d -s my-project -c ~/dev/my-project${NC}\n"
+    printf "     ${CYAN}tmux send-keys -t my-project 'claude --dangerously-skip-permissions' Enter${NC}\n"
+    echo ""
+fi
 printf "  ${YELLOW}Remember:${NC} Set an Anthropic spend cap at console.anthropic.com\n"
 echo "  before running unattended agents."
 echo ""
