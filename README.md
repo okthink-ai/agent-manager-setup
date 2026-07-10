@@ -60,7 +60,7 @@ This will:
 - Create a non-root user and harden SSH
 - Install fail2ban, NVM, Node.js 22, Tailscale
 - Authenticate with GitHub (supports secondary accounts)
-- Install Claude Code, and optionally Codex / Gemini / Pi CLIs
+- Install the AI coding agents you choose — Claude Code (recommended), Codex, Gemini, and/or Pi
 - **Switch to the non-root user** for all application work
 - Clone and install Agent Manager
 - Build the frontend for production
@@ -68,7 +68,7 @@ This will:
 
 After SSH hardening, setup switches to the non-root user for everything that follows — GitHub/AI authentication, the Agent Manager checkout, the build, and the running server all happen as that user, never as root (only `apt` and `tailscale up` still use root, where the OS requires it).
 
-**Optional extra CLIs.** After Claude Code, setup offers to install [OpenAI Codex](https://developers.openai.com/codex/cli) (`@openai/codex`), [Google Gemini CLI](https://www.npmjs.com/package/@google/gemini-cli) (`@google/gemini-cli`), and [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). Install whichever you have accounts/keys for — each prints its own auth hint and a failed install is skipped, not fatal.
+**Choose your agents.** Claude Code is offered first (recommended, default yes) but no longer mandatory — decline it and drive Agent Manager with another agent instead. Setup then offers [OpenAI Codex](https://developers.openai.com/codex/cli) (`@openai/codex`), [Google Gemini CLI](https://www.npmjs.com/package/@google/gemini-cli) (`@google/gemini-cli`), and [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). Install whichever you have accounts/keys for — each prints its own auth hint, a failed install is skipped rather than fatal, and setup warns if you end up with no agent at all.
 
 **Non-interactive auth.** The GitHub and Tailscale logins can skip the browser. Export a [Tailscale auth key](https://login.tailscale.com/admin/settings/keys) and/or a [GitHub PAT](https://github.com/settings/tokens) (with `repo` + `read:packages`) before running, and setup uses them instead of the interactive login:
 

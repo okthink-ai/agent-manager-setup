@@ -1,29 +1,28 @@
 #!/usr/bin/env bash
 #
-# ubuntu-install.sh — Install Agent Manager on an Ubuntu server you already own.
+# mac-install.sh — Install Agent Manager on your Mac.
 #
-# Run this ON the server, as your normal sudo user (NOT root). Unlike setup.sh
-# (which provisions a fresh, root-owned Hetzner VPS), this script assumes the box
-# already exists, your user and SSH access are already set up. You choose how to
-# reach the app: localhost-only (loopback; reach it via an SSH tunnel — most
-# secure) or direct IP (bound to all interfaces).
+# Run this ON your Mac, as your normal user. This is the local-machine path:
+# no VPS, no SSH hardening, no Tailscale, no firewall — you reach the app at
+# http://localhost:4801 in your own browser.
 #
 # It:
-#   1. Optionally installs any missing base packages (skips ones you already have)
+#   1. Checks Homebrew and installs any missing base tools (git, tmux, gh)
 #   2. Installs NVM + Node.js 22
-#   3. Installs GitHub CLI and authenticates (interactive, or GH_TOKEN)
+#   3. Authenticates GitHub CLI (interactive, or GH_TOKEN)
 #   4. Installs the AI coding agents you choose — Claude Code, Codex, Gemini, Pi
-#   5. Clones Agent Manager into a directory you choose and builds it
-#   6. Optionally starts the server (localhost-only or direct IP — your choice)
-#
-# It deliberately does NOT create a user, touch SSH config, or install a
-# firewall/fail2ban/Tailscale — this is your own box.
+#   5. Clones Agent Manager into a directory you choose and builds it (prod mode)
+#   6. Optionally starts the server in a tmux session
 #
 # Optional env vars:
 #   GH_TOKEN — a GitHub PAT with repo + read:packages (skips the browser login)
 #   PORT     — server port (default 4801)
 #
-# Designed to be idempotent — safe to re-run after a failure.
+# Designed to be idempotent — safe to re-run after a failure. It won't clobber
+# an existing checkout, .env files, or your Claude Code settings.
+#
+# NOTE: stays compatible with macOS's stock bash 3.2 — no associative arrays,
+# no ${var,,}, etc.
 #
 set -euo pipefail
 
@@ -52,8 +51,16 @@ REPO_URL="https://github.com/okthink-ai/claude-manager.git"
 PORT="${PORT:-4801}"
 GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 
+# The shell profile future terminals read. Macs default to zsh; respect a bash
+# user if that's what they run.
+if [[ "${SHELL:-}" == *zsh* ]]; then
+    SHELL_PROFILE="$HOME/.zshrc"
+else
+    SHELL_PROFILE="$HOME/.bashrc"
+fi
+
 # Load NVM into the current shell so node/npm/npx resolve. NVM only wires itself
-# into future *interactive* shells via ~/.bashrc; this script's shell needs it
+# into future *interactive* shells via the profile; this script's shell needs it
 # sourced explicitly. `set +u` around the source because nvm.sh isn't written to
 # survive `set -u`.
 NVM_DIR="$HOME/.nvm"
@@ -67,17 +74,9 @@ load_nvm() {
     fi
 }
 
-# True if something is listening on the given TCP port. Prefers ss (iproute2,
-# present by default); falls back to lsof, which is only an optional package.
+# True if something is listening on the given TCP port. lsof ships with macOS.
 port_listening() {
-    local port="$1"
-    if command -v ss &>/dev/null; then
-        ss -ltn "sport = :$port" 2>/dev/null | grep -q LISTEN
-    elif command -v lsof &>/dev/null; then
-        lsof -i ":$port" -sTCP:LISTEN &>/dev/null
-    else
-        return 1
-    fi
+    lsof -i ":$1" -sTCP:LISTEN &>/dev/null
 }
 
 # Install an optional global npm CLI (idempotent). A failed install warns and
@@ -99,86 +98,77 @@ install_npm_cli() {
 
 # ─── Pre-flight checks ───────────────────────────────────────────────
 
-section "Agent Manager — Ubuntu Server Install"
+section "Agent Manager — Mac Install"
+
+if [[ "$(uname)" != "Darwin" ]]; then
+    err "This script is for macOS. On an Ubuntu server, use ubuntu-install.sh instead."
+    exit 1
+fi
 
 if [[ $EUID -eq 0 ]]; then
-    err "Run this as your normal sudo user, NOT as root."
-    err "It uses 'sudo' only for package installs; everything else runs as you."
+    err "Run this as your normal user, not root/sudo — everything installs into your home."
     exit 1
 fi
 
-if ! command -v sudo &>/dev/null; then
-    err "'sudo' is required but not found. Install it (as root: apt install sudo)"
-    err "and make sure your user is in the sudo group, then re-run."
+# Homebrew is the one hard prerequisite: it's how we install anything missing,
+# and having it implies the Xcode Command Line Tools (git, compilers) are set up.
+if ! command -v brew &>/dev/null; then
+    err "Homebrew is required but not found. Install it first:"
+    err '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+    err "then re-run this script."
     exit 1
 fi
-
-if ! grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
-    warn "This script is designed for Ubuntu. Proceed with caution on other distros."
-fi
+ok "Homebrew found"
 
 # ─── Collect info upfront ─────────────────────────────────────────────
 
-read -rp "Git name (for commits, e.g. 'Jane Smith'): " GIT_NAME
-read -rp "Git email (for commits): " GIT_EMAIL
+# Git identity: your Mac likely has this already — only prompt when it's absent.
+if git config --global user.name &>/dev/null && git config --global user.email &>/dev/null; then
+    ok "Git identity already configured: $(git config --global user.name) <$(git config --global user.email)>"
+else
+    read -rp "Git name (for commits, e.g. 'Jane Smith'): " GIT_NAME
+    read -rp "Git email (for commits): " GIT_EMAIL
+    git config --global user.name "$GIT_NAME"
+    git config --global user.email "$GIT_EMAIL"
+    ok "Git configured: $GIT_NAME <$GIT_EMAIL>"
+fi
 
-DEFAULT_DIR="$HOME/dev/claude-manager"
+DEFAULT_DIR="$HOME/claude-manager"
 read -rp "Install directory for Agent Manager [$DEFAULT_DIR]: " INSTALL_DIR
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_DIR}"
 # Expand a leading ~ to $HOME (the shell won't, since it's inside a variable).
 INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 
-# How you'll reach Agent Manager. This decides how the server binds:
-#   localhost → loopback (127.0.0.1) only; reach it via an SSH tunnel. Most secure.
-#   direct    → all interfaces (0.0.0.0); reach it at http://<server-ip>:PORT.
-echo ""
-echo "  How will you reach Agent Manager on this box?"
-echo "    1) localhost — bind loopback only; reach it via an SSH tunnel (most secure)"
-echo "    2) direct IP — bind all interfaces; reach it at http://<server-ip>:$PORT"
-echo ""
-read -rp "Access mode [1=localhost / 2=direct IP] (default 1): " ACCESS_CHOICE
-case "$ACCESS_CHOICE" in
-    2|direct|d|ip|IP) ACCESS_MODE="direct" ;;
-    *)                ACCESS_MODE="localhost" ;;
-esac
-
-# Env prefix for launching the server. Direct mode sets CM_TERMINAL_ALLOW_LAN=1
-# (bind 0.0.0.0); localhost mode omits it so the server binds loopback.
-if [[ "$ACCESS_MODE" == "direct" ]]; then
-    LAUNCH_ENV="CM_TERMINAL_ALLOW_LAN=1 PORT=$PORT"
-else
-    LAUNCH_ENV="PORT=$PORT"
-fi
-
 echo ""
 info "Installing Agent Manager into: $INSTALL_DIR"
-info "Access mode: $ACCESS_MODE"
 [[ -n "$GH_TOKEN" ]] && ok "GitHub token detected — will authenticate non-interactively"
 echo ""
 
-# ─── 1. System packages (optional) ───────────────────────────────────
+# ─── 1. Base tools ────────────────────────────────────────────────────
 
-section "1/6  Base Packages"
+section "1/6  Base Tools"
 
-# Detect with `dpkg -s` rather than `command -v`: build-essential is a metapackage
-# with no binary of its own, so command-lookup can't see it.
-BASE_PKGS=(build-essential curl wget git unzip tmux htop lsof)
-MISSING_PKGS=()
-for pkg in "${BASE_PKGS[@]}"; do
-    dpkg -s "$pkg" &>/dev/null || MISSING_PKGS+=("$pkg")
+# Everything here has a real binary, so command -v detection works. curl and
+# unzip ship with macOS; the compiler toolchain comes with the Xcode CLT that
+# Homebrew already requires.
+BASE_TOOLS=(git tmux gh)
+MISSING_TOOLS=()
+for tool in "${BASE_TOOLS[@]}"; do
+    command -v "$tool" &>/dev/null || MISSING_TOOLS+=("$tool")
 done
 
-if [[ ${#MISSING_PKGS[@]} -eq 0 ]]; then
-    ok "All base packages already installed — skipping"
+if [[ ${#MISSING_TOOLS[@]} -eq 0 ]]; then
+    ok "All base tools already installed — skipping"
 else
-    info "Missing packages: ${MISSING_PKGS[*]}"
-    read -rp "Install them now with apt? (y/n): " WANT_PKGS
-    if [[ "$WANT_PKGS" =~ ^[Yy] ]]; then
-        sudo apt-get update
-        sudo apt-get install -y "${MISSING_PKGS[@]}"
-        ok "Installed: ${MISSING_PKGS[*]}"
+    info "Missing tools: ${MISSING_TOOLS[*]}"
+    read -rp "Install them now with Homebrew? (y/n): " WANT_TOOLS
+    if [[ "$WANT_TOOLS" =~ ^[Yy] ]]; then
+        brew install "${MISSING_TOOLS[@]}"
+        ok "Installed: ${MISSING_TOOLS[*]}"
     else
-        warn "Skipped. Agent Manager may fail to build without: ${MISSING_PKGS[*]}"
+        err "These are required (git to clone, gh to authenticate, tmux to run the server)."
+        err "Install them and re-run: brew install ${MISSING_TOOLS[*]}"
+        exit 1
     fi
 fi
 
@@ -202,17 +192,9 @@ else
     ok "Node.js installed: $(node --version)"
 fi
 
-# ─── 3. GitHub CLI + auth ────────────────────────────────────────────
+# ─── 3. GitHub auth ──────────────────────────────────────────────────
 
-section "3/6  GitHub CLI & Authentication"
-
-if ! command -v gh &>/dev/null; then
-    info "Installing GitHub CLI..."
-    # Refresh the index first — the base-packages step above skips apt-get update
-    # when nothing was missing, so gh could otherwise install against a stale index.
-    sudo apt-get update
-    sudo apt-get install -y gh
-fi
+section "3/6  GitHub Authentication"
 
 if gh auth status &>/dev/null; then
     ok "GitHub CLI already authenticated"
@@ -234,14 +216,12 @@ elif [[ -n "$GH_TOKEN" ]]; then
     fi
 else
     echo "  Agent Manager needs read access to the okthink-ai GitHub repos."
-    echo "  gh will print a one-time code and a URL — open the URL, enter the code,"
-    echo "  and make sure you're signed into the right GitHub account."
-    echo "  (To skip this, re-run with GH_TOKEN=<your PAT> set.)"
+    echo "  Your browser will open to approve the login — make sure you're signed"
+    echo "  into the right GitHub account."
     echo ""
     info "Authenticating with GitHub..."
     echo ""
-    # BROWSER=echo prints the URL instead of trying to launch a browser.
-    BROWSER=echo gh auth login -p ssh
+    gh auth login -p ssh
     echo ""
 fi
 
@@ -260,20 +240,15 @@ fi
 info "Setting up git credential helper..."
 gh auth setup-git
 
-# Export GITHUB_TOKEN in .bashrc for future interactive shells (npm registry auth).
-if ! grep -q 'GITHUB_TOKEN' "$HOME/.bashrc" 2>/dev/null; then
-    echo 'export GITHUB_TOKEN=$(gh auth token)' >> "$HOME/.bashrc"
-    ok "GITHUB_TOKEN added to .bashrc"
+# Export GITHUB_TOKEN in the shell profile for future terminals (npm registry auth).
+if ! grep -q 'GITHUB_TOKEN' "$SHELL_PROFILE" 2>/dev/null; then
+    echo 'export GITHUB_TOKEN=$(gh auth token)' >> "$SHELL_PROFILE"
+    ok "GITHUB_TOKEN added to $SHELL_PROFILE"
 else
-    ok "GITHUB_TOKEN already in .bashrc"
+    ok "GITHUB_TOKEN already in $SHELL_PROFILE"
 fi
 
-info "Configuring git identity..."
-git config --global user.name "$GIT_NAME"
-git config --global user.email "$GIT_EMAIL"
-ok "Git configured: $GIT_NAME <$GIT_EMAIL>"
-
-# ─── 4. Claude Code (optional, recommended) ──────────────────────────
+# ─── 4. Claude Code ──────────────────────────────────────────────────
 
 section "4/6  Claude Code"
 
@@ -318,13 +293,14 @@ EOF
     fi
 
     echo ""
-    info "Claude Code needs to authenticate. In another shell on this box, run:"
+    info "Claude Code needs to be authenticated. If you already use Claude Code on"
+    info "this Mac, you're set — just press Enter. Otherwise, in another terminal run:"
     echo ""
     printf "  ${CYAN}claude --dangerously-skip-permissions${NC}\n"
     echo ""
     echo "  Follow the OAuth URL, accept the YOLO-mode prompt, then /exit."
     echo ""
-    read -rp "  Press Enter after authenticating Claude Code (or Enter to skip)... "
+    read -rp "  Press Enter to continue... "
 fi
 
 # ─── Optional: other AI coding CLIs ──────────────────────────────────
@@ -370,7 +346,7 @@ fi
 
 # Run npm install with retry on auth failures (403 from GitHub Packages). The
 # repo's .npmrc points the @okthink-ai scope at GitHub Packages, which needs
-# GITHUB_TOKEN — exported inline here because ~/.bashrc doesn't affect this shell.
+# GITHUB_TOKEN — exported inline here because the profile doesn't affect this shell.
 npm_install_with_retry() {
     local DIR="$1" LABEL="$2" MAX_RETRIES=3 ATTEMPT=0
     while true; do
@@ -402,30 +378,12 @@ npm_install_with_retry() {
 npm_install_with_retry "$INSTALL_DIR" "root"
 npm_install_with_retry "$INSTALL_DIR/web" "web"
 
-# Copy .env.example → .env if present and .env is absent.
+# Copy .env.example → .env if present and .env is absent. No CM_TERMINAL_ALLOW_LAN
+# here: the server binds loopback by default, and localhost works either way on
+# your own machine.
 if [[ -f "$INSTALL_DIR/.env.example" && ! -f "$INSTALL_DIR/.env" ]]; then
     cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
     ok "Copied .env.example to .env"
-fi
-
-# Configure the bind mode in .env. The server reads .env via dotenv and binds
-# 0.0.0.0 only when CM_TERMINAL_ALLOW_LAN=1; otherwise it binds loopback. We set
-# it here (rather than only inline at launch) so UI-triggered restarts — which
-# don't pass the env var themselves — keep the same binding.
-touch "$INSTALL_DIR/.env"
-if [[ "$ACCESS_MODE" == "direct" ]]; then
-    # Ensure exactly one CM_TERMINAL_ALLOW_LAN=1 line.
-    sed -i '/^CM_TERMINAL_ALLOW_LAN=/d' "$INSTALL_DIR/.env"
-    echo 'CM_TERMINAL_ALLOW_LAN=1' >> "$INSTALL_DIR/.env"
-    ok "Set CM_TERMINAL_ALLOW_LAN=1 in .env (direct-IP access, binds 0.0.0.0)"
-else
-    # Localhost only: strip any LAN flag so the server binds loopback.
-    if grep -q '^CM_TERMINAL_ALLOW_LAN=' "$INSTALL_DIR/.env" 2>/dev/null; then
-        sed -i '/^CM_TERMINAL_ALLOW_LAN=/d' "$INSTALL_DIR/.env"
-        ok "Removed CM_TERMINAL_ALLOW_LAN from .env (localhost only, binds loopback)"
-    else
-        ok "Localhost only — server binds loopback (127.0.0.1)"
-    fi
 fi
 
 # Write Firebase config for the frontend (client-side keys, not secrets). Must be
@@ -446,7 +404,7 @@ ENVEOF
     ok "Firebase config written to web/.env"
 fi
 
-# Build frontend for prod mode (served over plain HTTP by the single server).
+# Build frontend for prod mode (served by the single server on $PORT).
 info "Building frontend for production..."
 ( load_nvm; cd "$INSTALL_DIR/web" && npx vite build )
 ok "Frontend built"
@@ -461,10 +419,12 @@ section "6/6  Start the Server"
 
 read -rp "Start the server now in a tmux session? (y/n): " START_NOW
 if [[ "$START_NOW" =~ ^[Yy] ]]; then
+    STARTED=false
     # Re-runs: never create the session twice — a duplicate `tmux new-session`
     # fails hard and set -e would kill the script right before the summary.
     if port_listening "$PORT"; then
         ok "Server is already running on port $PORT"
+        STARTED=true
     elif tmux has-session -t am-server 2>/dev/null; then
         warn "tmux session 'am-server' already exists but nothing is listening on :$PORT."
         warn "Attach to see what happened: tmux attach -t am-server"
@@ -473,11 +433,10 @@ if [[ "$START_NOW" =~ ^[Yy] ]]; then
         tmux new-session -d -s am-server -c "$INSTALL_DIR"
         # Single-quote so the pane's shell expands $HOME/$NVM_DIR and sources nvm itself.
         tmux send-keys -t am-server \
-            'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '"$LAUNCH_ENV npx tsx server/index.ts" Enter
+            'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '"PORT=$PORT npx tsx server/index.ts" Enter
         # Poll for up to ~15s — a first `npx tsx` cold start (transpile + DB/model
         # init) can take several seconds before the port is listening.
         info "Waiting for the server to come up..."
-        STARTED=false
         for _ in $(seq 1 15); do
             if port_listening "$PORT"; then STARTED=true; break; fi
             sleep 1
@@ -488,56 +447,32 @@ if [[ "$START_NOW" =~ ^[Yy] ]]; then
             warn "Server didn't come up within 15s — check: tmux attach -t am-server"
         fi
     fi
+    if [[ "$STARTED" == true ]]; then
+        read -rp "Open http://localhost:$PORT in your browser now? (y/n): " OPEN_NOW
+        [[ "$OPEN_NOW" =~ ^[Yy] ]] && open "http://localhost:$PORT"
+    fi
 fi
 
 # ─── Done ─────────────────────────────────────────────────────────────
 
-SERVER_IP=$(hostname -I | awk '{print $1}')
-
 section "Install Complete!"
 
-printf "  ${GREEN}App dir:${NC}      %s\n" "$INSTALL_DIR"
-printf "  ${GREEN}Access mode:${NC}  %s\n" "$ACCESS_MODE"
-if [[ "$ACCESS_MODE" == "direct" ]]; then
-    printf "  ${GREEN}URL:${NC}          http://%s:%s\n" "$SERVER_IP" "$PORT"
-else
-    printf "  ${GREEN}URL:${NC}          http://localhost:%s  (over an SSH tunnel)\n" "$PORT"
-fi
+printf "  ${GREEN}App dir:${NC}  %s\n" "$INSTALL_DIR"
+printf "  ${GREEN}URL:${NC}      http://localhost:%s\n" "$PORT"
 echo ""
 
 if [[ ! "$START_NOW" =~ ^[Yy] ]]; then
-    echo "  Start the server (in a tmux session so it persists after disconnect):"
+    echo "  Start the server (in a tmux session so it survives closing the terminal):"
     echo ""
     printf "    ${CYAN}tmux new-session -d -s am-server -c %s${NC}\n" "$INSTALL_DIR"
-    printf "    ${CYAN}tmux send-keys -t am-server '%s npx tsx server/index.ts' Enter${NC}\n" "$LAUNCH_ENV"
+    printf "    ${CYAN}tmux send-keys -t am-server 'PORT=%s npx tsx server/index.ts' Enter${NC}\n" "$PORT"
     echo ""
 fi
 
-if [[ "$ACCESS_MODE" == "direct" ]]; then
-    echo "  Access Agent Manager:"
-    echo ""
-    printf "    ${CYAN}http://%s:%s${NC}\n" "$SERVER_IP" "$PORT"
-    echo ""
-    warn "hostname -I returned '$SERVER_IP' (the first address). If the box has"
-    warn "multiple interfaces, substitute the IP you actually reach it on."
-    echo ""
-    if [[ "$SERVER_IP" != 10.* && "$SERVER_IP" != 192.168.* && "$SERVER_IP" != 172.1[6-9].* && "$SERVER_IP" != 172.2[0-9].* && "$SERVER_IP" != 172.3[0-1].* ]]; then
-        warn "This looks like a PUBLIC IP. With no firewall, port $PORT is reachable"
-        warn "from the internet. The terminal token gates the terminal, but consider"
-        warn "restricting the port (ufw / cloud firewall) if this box faces the internet."
-        echo ""
-    fi
-else
-    echo "  The server binds to localhost only. Reach it from your laptop with an"
-    echo "  SSH tunnel (run this on your laptop, leave it open):"
-    echo ""
-    printf "    ${CYAN}ssh -L %s:localhost:%s %s@%s${NC}\n" "$PORT" "$PORT" "$USER" "${SERVER_IP:-<server-ip>}"
-    echo ""
-    echo "  then open on your laptop:"
-    echo ""
-    printf "    ${CYAN}http://localhost:%s${NC}\n" "$PORT"
-    echo ""
-fi
+echo "  Then open in your browser:"
+echo ""
+printf "    ${CYAN}http://localhost:%s${NC}\n" "$PORT"
+echo ""
 printf "  ${YELLOW}Remember:${NC} Set an Anthropic spend cap at console.anthropic.com\n"
 echo "  before running unattended agents."
 echo ""
