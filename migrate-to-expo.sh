@@ -11,7 +11,7 @@
 #   1. Finds the install and checks Node + GitHub auth prerequisites
 #   2. Translates web/.env Firebase config to apps/expo/.env (EXPO_PUBLIC_*)
 #   3. Fast-forwards the checkout to origin/main (recording a rollback SHA)
-#   4. Installs dependencies (one root npm install — workspaces cover apps/expo)
+#   4. Installs dependencies (one root npm ci — workspaces cover apps/expo)
 #   5. Builds the Expo web export
 #   6. Keeps the box reachable (CM_TERMINAL_ALLOW_LAN) and restarts the server
 #   7. Verifies the server responds; with --clean, removes old Vite artifacts
@@ -183,15 +183,17 @@ kill_port_listeners() {
     return 0
 }
 
-# Run npm install with retry on auth failures (403 from GitHub Packages). The
+# Run npm ci with retry on auth failures (403 from GitHub Packages). The
 # repo's .npmrc points the @okthink-ai scope at GitHub Packages, which needs
-# GITHUB_TOKEN — exported during preflight.
+# GITHUB_TOKEN — exported during preflight. npm ci (not install) so we get
+# exactly the dependency tree upstream tested and never rewrite the lockfile —
+# a rewritten lockfile would trip the clean-tree check on the next run.
 npm_install_with_retry() {
     local DIR="$1" LABEL="$2" MAX_RETRIES=3 ATTEMPT=0
     while true; do
         ATTEMPT=$((ATTEMPT + 1))
         info "Installing $LABEL dependencies (attempt $ATTEMPT)..."
-        if ( load_nvm; cd "$DIR" && npm install ); then
+        if ( load_nvm; cd "$DIR" && npm ci ); then
             ok "$LABEL dependencies installed"
             return 0
         fi
@@ -342,7 +344,7 @@ elif command -v gh &>/dev/null && gh auth token &>/dev/null; then
     export GITHUB_TOKEN
     ok "GITHUB_TOKEN taken from 'gh auth token'"
 else
-    err "No GITHUB_TOKEN and no authenticated gh CLI. npm install needs a token"
+    err "No GITHUB_TOKEN and no authenticated gh CLI. Installing dependencies needs a token"
     err "with read:packages for the okthink-ai org. Fix with one of:"
     err "  gh auth login -p ssh                       (then re-run)"
     err "  GITHUB_TOKEN=<PAT> bash migrate-to-expo.sh"
@@ -350,7 +352,17 @@ else
 fi
 
 # Refuse to guess around local changes — deployed boxes should be clean, on main.
+# Exception: package-lock.json metadata churn. npm rewrites the lockfile when
+# the local npm version differs from the one that generated it (e.g. npm 10
+# strips the `libc` fields npm 11 writes), so any box where npm install ever
+# ran is permanently "dirty" through no fault of the user. If lockfiles are
+# the ONLY modification, restore them and move on; anything else still aborts.
 cd "$INSTALL_DIR"
+if [[ -n "$(git status --porcelain)" ]] \
+   && [[ -z "$(git status --porcelain | grep -vE '^ M (.+/)?package-lock\.json$')" ]]; then
+    info "Only package-lock.json metadata churn (differing npm versions) — restoring pristine lockfile(s)"
+    git checkout -- ':(glob)**/package-lock.json'
+fi
 if [[ -n "$(git status --porcelain)" ]]; then
     err "The checkout has uncommitted changes — refusing to update over them."
     err "Inspect with 'git -C $INSTALL_DIR status', stash or commit, then re-run."
