@@ -117,6 +117,17 @@ Prices and exact type availability change over time — the script always reads 
 
 Both scripts are idempotent — they check what's already installed and skip completed steps. If the script fails partway through, re-run it and it will pick up where it left off.
 
+## Updating an Existing Install
+
+Agent Manager's frontend moved from Vite (`web/`) to Expo (`apps/expo`). Boxes installed before the switch can't just `git pull` — the frontend config, dependency layout, and build command all changed. Run the migration script on the box instead (works on both the VPS and Mac installs; it probes `~/dev/claude-manager` and `~/claude-manager`, or takes `--dir`):
+
+```bash
+bash migrate-to-expo.sh            # migrate (or update an already-migrated box)
+bash migrate-to-expo.sh --clean    # also delete the old Vite artifacts (~350 MB)
+```
+
+It translates your Firebase config to `apps/expo/.env`, fast-forwards the checkout to `main`, reinstalls dependencies, rebuilds the frontend, keeps the box reachable over Tailscale/LAN (`CM_TERMINAL_ALLOW_LAN=1`), restarts the `am-server` tmux session, and verifies the server responds. It records the pre-update commit and prints rollback instructions if anything fails. Idempotent — re-running it later acts as a plain "update to latest".
+
 ## Access
 
 After setup, access Agent Manager at:

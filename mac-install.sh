@@ -375,8 +375,8 @@ npm_install_with_retry() {
     done
 }
 
+# One root install covers the frontend too (npm workspaces: apps/*).
 npm_install_with_retry "$INSTALL_DIR" "root"
-npm_install_with_retry "$INSTALL_DIR/web" "web"
 
 # Copy .env.example → .env if present and .env is absent. No CM_TERMINAL_ALLOW_LAN
 # here: the server binds loopback by default, and localhost works either way on
@@ -387,26 +387,26 @@ if [[ -f "$INSTALL_DIR/.env.example" && ! -f "$INSTALL_DIR/.env" ]]; then
 fi
 
 # Write Firebase config for the frontend (client-side keys, not secrets). Must be
-# in place BEFORE the build — Vite inlines VITE_* env at build time.
-WEB_ENV="$INSTALL_DIR/web/.env"
-if [[ -f "$WEB_ENV" ]]; then
-    ok "web/.env already exists"
+# in place BEFORE the build — Expo inlines EXPO_PUBLIC_* env at export time.
+EXPO_ENV="$INSTALL_DIR/apps/expo/.env"
+if [[ -f "$EXPO_ENV" ]]; then
+    ok "apps/expo/.env already exists"
 else
-    info "Writing Firebase config to web/.env..."
-    cat > "$WEB_ENV" <<'ENVEOF'
-VITE_FIREBASE_API_KEY=AIzaSyCGCFvt5iN93rQkH6R5zStANc2ZGj_YL8E
-VITE_FIREBASE_AUTH_DOMAIN=claude-manager-chat.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=claude-manager-chat
-VITE_FIREBASE_STORAGE_BUCKET=claude-manager-chat.firebasestorage.app
-VITE_FIREBASE_MESSAGING_SENDER_ID=1041886556076
-VITE_FIREBASE_APP_ID=1:1041886556076:web:22e67ff4818b56c80e9409
+    info "Writing Firebase config to apps/expo/.env..."
+    cat > "$EXPO_ENV" <<'ENVEOF'
+EXPO_PUBLIC_FIREBASE_API_KEY=AIzaSyCGCFvt5iN93rQkH6R5zStANc2ZGj_YL8E
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=claude-manager-chat.firebaseapp.com
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=claude-manager-chat
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=claude-manager-chat.firebasestorage.app
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=1041886556076
+EXPO_PUBLIC_FIREBASE_APP_ID=1:1041886556076:web:22e67ff4818b56c80e9409
 ENVEOF
-    ok "Firebase config written to web/.env"
+    ok "Firebase config written to apps/expo/.env"
 fi
 
-# Build frontend for prod mode (served by the single server on $PORT).
-info "Building frontend for production..."
-( load_nvm; cd "$INSTALL_DIR/web" && npx vite build )
+# Build the Expo web export for prod mode (served by the single server on $PORT).
+info "Building frontend for production (expo export — takes a few minutes)..."
+( load_nvm; cd "$INSTALL_DIR" && npm run build )
 ok "Frontend built"
 
 # Set server mode to prod so future restarts preserve the mode.
