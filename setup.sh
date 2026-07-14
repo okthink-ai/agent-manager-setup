@@ -337,8 +337,15 @@ fi
 if [[ -n "$GH_TOKEN" ]]; then
     info "Using the token's existing scopes (PAT must include repo + read:packages)."
 else
+    # `gh auth refresh` only works for web/OAuth logins. If this box was
+    # previously authenticated with a token (and GH_TOKEN just isn't exported
+    # this run), the refresh errors out — don't let that abort the whole script.
+    # The PAT already carries its own scopes, so warn and continue instead.
     info "Ensuring read:packages scope..."
-    run_as_user "gh auth refresh -h github.com -s read:packages"
+    if ! run_as_user "gh auth refresh -h github.com -s read:packages"; then
+        warn "Couldn't refresh scopes (expected for token-based logins) — continuing."
+        warn "If npm install hits a 403 later, make sure your login has repo + read:packages."
+    fi
 fi
 
 # Wire gh as git credential helper (needed for HTTPS git-URL deps in package.json)
