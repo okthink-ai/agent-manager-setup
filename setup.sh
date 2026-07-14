@@ -337,8 +337,15 @@ fi
 if [[ -n "$GH_TOKEN" ]]; then
     info "Using the token's existing scopes (PAT must include repo + read:packages)."
 else
+    # `gh auth refresh` only works for web/OAuth logins. If this box was
+    # previously authenticated with a token (and GH_TOKEN just isn't exported
+    # this run), the refresh errors out — don't let that abort the whole script.
+    # The PAT already carries its own scopes, so warn and continue instead.
     info "Ensuring read:packages scope..."
-    run_as_user "gh auth refresh -h github.com -s read:packages"
+    if ! run_as_user "gh auth refresh -h github.com -s read:packages"; then
+        warn "Couldn't refresh scopes (expected for token-based logins) — continuing."
+        warn "If npm install hits a 403 later, make sure your login has repo + read:packages."
+    fi
 fi
 
 # Wire gh as git credential helper (needed for HTTPS git-URL deps in package.json)
@@ -473,6 +480,14 @@ else
     ok "Cloned to $INSTALL_DIR"
 fi
 
+# A checkout from before the Expo frontend lacks apps/expo — the steps below
+# would die with a bare "No such file or directory". Point at the migration script.
+if [[ ! -d "$INSTALL_DIR/apps/expo" ]]; then
+    err "The checkout at $INSTALL_DIR predates the Expo frontend."
+    err "Update it first with:  bash migrate-to-expo.sh --dir $INSTALL_DIR"
+    exit 1
+fi
+
 # Helper: run npm install with retry on auth failures (403 from GitHub Packages)
 npm_install_with_retry() {
     local DIR="$1"
@@ -511,8 +526,8 @@ npm_install_with_retry() {
     done
 }
 
+# One root install covers the frontend too (npm workspaces: apps/*).
 npm_install_with_retry "~/dev/claude-manager" "root"
-npm_install_with_retry "~/dev/claude-manager/web" "web"
 
 # Copy .env.example if it exists
 if [[ -f "$INSTALL_DIR/.env.example" ]] && [[ ! -f "$INSTALL_DIR/.env" ]]; then
@@ -521,26 +536,42 @@ if [[ -f "$INSTALL_DIR/.env.example" ]] && [[ ! -f "$INSTALL_DIR/.env" ]]; then
     ok "Copied .env.example to .env"
 fi
 
-# Write Firebase config for the frontend (client-side keys, not secrets)
-WEB_ENV="$INSTALL_DIR/web/.env"
-if [[ -f "$WEB_ENV" ]]; then
-    ok "web/.env already exists"
+# This box is reached at http://<tailscale-ip>:4801, but the server binds
+# loopback unless CM_TERMINAL_ALLOW_LAN=1. Persist the flag in .env (the server
+# loads it via dotenv) so UI-triggered restarts keep the binding too.
+touch "$INSTALL_DIR/.env"
+chown "$NEW_USER:$NEW_USER" "$INSTALL_DIR/.env"
+if grep -q '^CM_TERMINAL_ALLOW_LAN=1' "$INSTALL_DIR/.env" 2>/dev/null; then
+    ok "CM_TERMINAL_ALLOW_LAN already set in .env"
 else
-    info "Writing Firebase config to web/.env..."
-    run_as_user 'cat > ~/dev/claude-manager/web/.env <<ENVEOF
-VITE_FIREBASE_API_KEY=AIzaSyCGCFvt5iN93rQkH6R5zStANc2ZGj_YL8E
-VITE_FIREBASE_AUTH_DOMAIN=claude-manager-chat.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=claude-manager-chat
-VITE_FIREBASE_STORAGE_BUCKET=claude-manager-chat.firebasestorage.app
-VITE_FIREBASE_MESSAGING_SENDER_ID=1041886556076
-VITE_FIREBASE_APP_ID=1:1041886556076:web:22e67ff4818b56c80e9409
-ENVEOF'
-    ok "Firebase config written to web/.env"
+    sed -i '/^CM_TERMINAL_ALLOW_LAN=/d' "$INSTALL_DIR/.env"
+    echo 'CM_TERMINAL_ALLOW_LAN=1' >> "$INSTALL_DIR/.env"
+    ok "Set CM_TERMINAL_ALLOW_LAN=1 in .env (server binds 0.0.0.0 for Tailscale access)"
 fi
 
-# Build frontend for prod mode (plain HTTP, no cert warnings over Tailscale)
-info "Building frontend for production..."
-run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && cd ~/dev/claude-manager/web && npx vite build'
+# Write Firebase config for the frontend (client-side keys, not secrets). Must
+# be in place BEFORE the build — Expo inlines EXPO_PUBLIC_* env at export time.
+# Fallback copy — canonical values live in firebase-defaults.env; keep all four scripts in sync.
+EXPO_ENV="$INSTALL_DIR/apps/expo/.env"
+if [[ -f "$EXPO_ENV" ]]; then
+    ok "apps/expo/.env already exists"
+else
+    info "Writing Firebase config to apps/expo/.env..."
+    run_as_user 'cat > ~/dev/claude-manager/apps/expo/.env <<ENVEOF
+EXPO_PUBLIC_FIREBASE_API_KEY=AIzaSyCGCFvt5iN93rQkH6R5zStANc2ZGj_YL8E
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=claude-manager-chat.firebaseapp.com
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=claude-manager-chat
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=claude-manager-chat.firebasestorage.app
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=1041886556076
+EXPO_PUBLIC_FIREBASE_APP_ID=1:1041886556076:web:22e67ff4818b56c80e9409
+ENVEOF'
+    ok "Firebase config written to apps/expo/.env"
+fi
+
+# Build the Expo web export for prod mode (served by the single server over
+# plain HTTP — no cert warnings over Tailscale).
+info "Building frontend for production (expo export — takes a few minutes)..."
+run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && cd ~/dev/claude-manager && npm run build'
 ok "Frontend built"
 
 # Set server mode to prod so future restarts preserve the mode

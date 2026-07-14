@@ -1,0 +1,5 @@
+# Personal Claude Code settings (merged locally by Claude Code, never shared)
+.claude/settings.local.json
+
+# Claude Manager sidebar icons (personal tooling, not part of the repo)
+.claude-manager-images/

@@ -52,6 +52,18 @@ ok()    { printf "${GREEN}==> %s${NC}\n" "$*"; }
 warn()  { printf "${YELLOW}==> %s${NC}\n" "$*"; }
 err()   { printf "${RED}==> %s${NC}\n" "$*" >&2; }
 
+# This script is meant to run as your normal user — it calls `sudo` only for the
+# few steps that need root (package and hcloud install). If the whole thing is
+# launched under `sudo`, then $HOME is /root and the SSH key, ~/.ssh/config entry
+# and hcloud context all get written into root's home — leaving your real user
+# unable to `ssh agent-manager-vps` without sudo. Detect that case and re-exec as
+# the invoking user so every artifact lands in (and is owned by) your home.
+if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    warn "Launched with sudo — re-running as '$SUDO_USER' so keys and SSH config land in your home, not /root."
+    warn "(Individual steps that need root will still ask for sudo on their own.)"
+    exec sudo -u "$SUDO_USER" -H -- bash "$0" "$@"
+fi
+
 usage() {
     cat <<EOF
 Usage: bash provision.sh [options]
@@ -97,6 +109,20 @@ confirm() {
     local reply
     read -rp "$1 [Y/n]: " reply || return 1
     [[ -z "$reply" || "$reply" =~ ^[Yy] ]]
+}
+
+# Yes/no prompt for DESTRUCTIVE actions. Unlike confirm(), the default is no:
+# only an explicit y/Y answer returns 0 — a bare Enter or an EOF (Ctrl+D)
+# declines. Never auto-accepted: even under --bypass-consent it declines, so a
+# destructive step can't happen without a deliberate keystroke.
+confirm_destructive() {
+    if [[ "$BYPASS_CONSENT" == true ]]; then
+        warn "$1 → no (destructive prompts are never auto-accepted, even with --bypass-consent)"
+        return 1
+    fi
+    local reply
+    read -rp "$1 [y/N]: " reply || return 1
+    [[ "$reply" =~ ^[Yy] ]]
 }
 
 # Read a line into the named variable, or auto-fill <auto-value> under
@@ -552,9 +578,37 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
         ok "Firewall created with all rules"
     fi
 
-    # Create server — skip location/type selection if server already exists
+    # Create server — but only skip creation after showing you WHICH server we
+    # found and letting you decide. A name-only "it exists, skip" silently
+    # reuses any server called "$SERVER_NAME" in the project this token points
+    # to — which is exactly how "I deleted my server but setup won't make a new
+    # one" happens: the one you deleted was in a different project than this
+    # context, so a leftover "$SERVER_NAME" here still matches.
+    SERVER_EXISTS=false
     if hcloud server describe "$SERVER_NAME" &>/dev/null; then
-        ok "Server '$SERVER_NAME' already exists"
+        EXISTING_STATUS=$(hcloud server describe "$SERVER_NAME" -o json 2>/dev/null | jq -r '.status' 2>/dev/null || echo "unknown")
+        EXISTING_IP=$(hcloud server ip "$SERVER_NAME" 2>/dev/null || true)
+        ACTIVE_CTX=$(hcloud context active 2>/dev/null || echo "env token")
+        SERVER_EXISTS=true
+        warn "A server named '$SERVER_NAME' already exists (project: $ACTIVE_CTX, status: $EXISTING_STATUS, IP: ${EXISTING_IP:-none})."
+        if [[ "$BYPASS_CONSENT" != true ]]; then
+            echo "  If this isn't the server you expect — e.g. you deleted yours in a different"
+            echo "  Hetzner project than this token points to — you can replace it now."
+            if ! confirm "Reuse this existing server? (No = delete it and create a fresh one)"; then
+                if confirm_destructive "Permanently DELETE '$SERVER_NAME' (IP ${EXISTING_IP:-none}) and recreate it?"; then
+                    info "Deleting server '$SERVER_NAME'..."
+                    hcloud server delete "$SERVER_NAME"
+                    ok "Deleted. A fresh server will be created below."
+                    SERVER_EXISTS=false
+                else
+                    warn "Keeping the existing server."
+                fi
+            fi
+        fi
+    fi
+
+    if [[ "$SERVER_EXISTS" == true ]]; then
+        ok "Reusing existing server '$SERVER_NAME'"
         SERVER_IP=$(hcloud server ip "$SERVER_NAME" 2>/dev/null || true)
     else
         # Cache the server-type catalogue once — we reuse it for every location.
@@ -709,6 +763,14 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
                 if [[ -z "$LOCATION" && -n "$SUGGESTED" ]]; then
                     LOCATION="$SUGGESTED"
                     ok "Using suggested location: $LOCATION"
+                fi
+
+                # Reject empty input (no suggestion to fall back on). An empty
+                # LOCATION otherwise matches `grep -qw ""` and breaks the loop,
+                # later crashing on an empty type list ("TYPE_NAMES[0]: unbound").
+                if [[ -z "$LOCATION" ]]; then
+                    err "Please enter one of the locations listed above."
+                    continue
                 fi
 
                 if echo "$AVAILABLE_LOCATIONS" | grep -qw "$LOCATION"; then
