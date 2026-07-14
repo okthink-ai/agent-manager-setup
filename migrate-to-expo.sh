@@ -239,6 +239,7 @@ read_env_var() {
 # web/dist and web/node_modules are still on disk in every rollback scenario.
 PREV_SHA=""
 PULLED=false
+HAD_WEB=false
 on_exit() {
     local code=$?
     if [[ $code -ne 0 && "$PULLED" == true ]]; then
@@ -247,7 +248,13 @@ on_exit() {
         echo "" >&2
         printf "    ${CYAN}cd %s${NC}\n" "$INSTALL_DIR" >&2
         printf "    ${CYAN}git checkout %s${NC}\n" "$PREV_SHA" >&2
-        printf "    ${CYAN}npm install && (cd web && npm install)${NC}\n" >&2
+        # The rollback commit only has a web/ workspace on first-time
+        # migrations — already-migrated boxes roll back to the Expo layout.
+        if [[ "$HAD_WEB" == true ]]; then
+            printf "    ${CYAN}npm install && (cd web && npm install)${NC}\n" >&2
+        else
+            printf "    ${CYAN}npm install${NC}\n" >&2
+        fi
         printf "    ${CYAN}PORT=%s npx tsx server/index.ts${NC}\n" "$PORT" >&2
         echo "" >&2
         err "Or fix the issue and re-run this script — every step is idempotent."
@@ -259,6 +266,14 @@ trap 'echo; err "Interrupted. Re-run this script to resume — finished steps ar
 # ─── 1. Preflight ─────────────────────────────────────────────────────
 
 section "1/8  Preflight"
+
+# Without a TTY every prompt reads EOF and silently counts as a decline —
+# including the one that keeps remote boxes reachable. Refuse to guess.
+if [[ ! -t 0 && "$ASSUME_YES" != true ]]; then
+    err "stdin is not a terminal, so prompts can't be answered."
+    err "Re-run with -y for unattended mode, or allocate a TTY (ssh -t)."
+    exit 1
+fi
 
 for cmd in git tmux curl; do
     if ! command -v "$cmd" &>/dev/null; then
@@ -349,12 +364,19 @@ if [[ "$BRANCH" != "main" ]]; then
 fi
 ok "Checkout is clean and on main"
 
+# Remember which layout we're rolling back to (pre-pull): the Vite layout has
+# web/package.json; an already-migrated box doesn't. on_exit uses this to
+# print the matching rollback recipe.
+[[ -f "$INSTALL_DIR/web/package.json" ]] && HAD_WEB=true
+
 # ─── 2. Capture the old frontend config ───────────────────────────────
 
 section "2/8  Frontend Config (Firebase)"
 
 # Defaults: the shared okthink Firebase project the installers ship
 # (client-side keys, not secrets).
+# Fallback copy — canonical values live in firebase-defaults.env; keep all
+# four scripts (setup.sh, ubuntu-install.sh, mac-install.sh, this one) in sync.
 FB_API_KEY="AIzaSyCGCFvt5iN93rQkH6R5zStANc2ZGj_YL8E"
 FB_AUTH_DOMAIN="claude-manager-chat.firebaseapp.com"
 FB_PROJECT_ID="claude-manager-chat"
@@ -362,6 +384,22 @@ FB_STORAGE_BUCKET="claude-manager-chat.firebasestorage.app"
 FB_SENDER_ID="1041886556076"
 FB_APP_ID="1:1041886556076:web:22e67ff4818b56c80e9409"
 DROPPED_VAPID=""
+
+# When run from a checkout of this repo (rather than curl'd standalone),
+# prefer the canonical firebase-defaults.env next to this script so a key
+# rotation only has to land in one place.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/firebase-defaults.env" ]]; then
+    # shellcheck source=firebase-defaults.env
+    . "$SCRIPT_DIR/firebase-defaults.env"
+    if [[ -n "${EXPO_PUBLIC_FIREBASE_API_KEY:-}" ]]; then FB_API_KEY="$EXPO_PUBLIC_FIREBASE_API_KEY"; fi
+    if [[ -n "${EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN:-}" ]]; then FB_AUTH_DOMAIN="$EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN"; fi
+    if [[ -n "${EXPO_PUBLIC_FIREBASE_PROJECT_ID:-}" ]]; then FB_PROJECT_ID="$EXPO_PUBLIC_FIREBASE_PROJECT_ID"; fi
+    if [[ -n "${EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET:-}" ]]; then FB_STORAGE_BUCKET="$EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET"; fi
+    if [[ -n "${EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID:-}" ]]; then FB_SENDER_ID="$EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID"; fi
+    if [[ -n "${EXPO_PUBLIC_FIREBASE_APP_ID:-}" ]]; then FB_APP_ID="$EXPO_PUBLIC_FIREBASE_APP_ID"; fi
+    ok "Loaded shared Firebase defaults from firebase-defaults.env"
+fi
 
 WEB_ENV="$INSTALL_DIR/web/.env"
 CONFIG_SOURCE="installer defaults"
@@ -513,10 +551,11 @@ ok "Port $PORT is free"
 # ── Start the new server ──
 # CM_FRONTEND_DIST isn't needed — the server defaults to apps/expo/dist.
 # CM_TERMINAL_ALLOW_LAN comes from .env via dotenv.
-if ! tmux has-session -t am-server 2>/dev/null; then
-    info "Creating tmux session 'am-server'..."
-    tmux new-session -d -s am-server -c "$INSTALL_DIR"
-fi
+# Always launch in a brand-new session: the old pane may not be an idle shell
+# (a leftover less/vim, or the dying server) and would swallow the command.
+tmux kill-session -t am-server 2>/dev/null || true
+info "Creating tmux session 'am-server'..."
+tmux new-session -d -s am-server -c "$INSTALL_DIR"
 info "Starting the server..."
 # Single-quote so the pane's shell expands $HOME/$NVM_DIR and sources nvm itself.
 tmux send-keys -t am-server \

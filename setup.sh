@@ -480,6 +480,14 @@ else
     ok "Cloned to $INSTALL_DIR"
 fi
 
+# A checkout from before the Expo frontend lacks apps/expo — the steps below
+# would die with a bare "No such file or directory". Point at the migration script.
+if [[ ! -d "$INSTALL_DIR/apps/expo" ]]; then
+    err "The checkout at $INSTALL_DIR predates the Expo frontend."
+    err "Update it first with:  bash migrate-to-expo.sh --dir $INSTALL_DIR"
+    exit 1
+fi
+
 # Helper: run npm install with retry on auth failures (403 from GitHub Packages)
 npm_install_with_retry() {
     local DIR="$1"
@@ -543,6 +551,7 @@ fi
 
 # Write Firebase config for the frontend (client-side keys, not secrets). Must
 # be in place BEFORE the build — Expo inlines EXPO_PUBLIC_* env at export time.
+# Fallback copy — canonical values live in firebase-defaults.env; keep all four scripts in sync.
 EXPO_ENV="$INSTALL_DIR/apps/expo/.env"
 if [[ -f "$EXPO_ENV" ]]; then
     ok "apps/expo/.env already exists"

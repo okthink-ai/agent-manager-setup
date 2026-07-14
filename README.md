@@ -119,9 +119,10 @@ Both scripts are idempotent — they check what's already installed and skip com
 
 ## Updating an Existing Install
 
-Agent Manager's frontend moved from Vite (`web/`) to Expo (`apps/expo`). Boxes installed before the switch can't just `git pull` — the frontend config, dependency layout, and build command all changed. Run the migration script on the box instead (works on both the VPS and Mac installs; it probes `~/dev/claude-manager` and `~/claude-manager`, or takes `--dir`):
+Agent Manager's frontend moved from Vite (`web/`) to Expo (`apps/expo`). Boxes installed before the switch can't just `git pull` — the frontend config, dependency layout, and build command all changed. Run the migration script on the box instead (works on both the VPS and Mac installs; it probes `~/dev/claude-manager` and `~/claude-manager`, or takes `--dir`). This repo lives on your laptop, not the box, so fetch the script first:
 
 ```bash
+curl -fsSLO https://raw.githubusercontent.com/okthink-ai/agent-manager-setup/main/migrate-to-expo.sh
 bash migrate-to-expo.sh            # migrate (or update an already-migrated box)
 bash migrate-to-expo.sh --clean    # also delete the old Vite artifacts (~350 MB)
 ```

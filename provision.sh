@@ -111,6 +111,20 @@ confirm() {
     [[ -z "$reply" || "$reply" =~ ^[Yy] ]]
 }
 
+# Yes/no prompt for DESTRUCTIVE actions. Unlike confirm(), the default is no:
+# only an explicit y/Y answer returns 0 — a bare Enter or an EOF (Ctrl+D)
+# declines. Never auto-accepted: even under --bypass-consent it declines, so a
+# destructive step can't happen without a deliberate keystroke.
+confirm_destructive() {
+    if [[ "$BYPASS_CONSENT" == true ]]; then
+        warn "$1 → no (destructive prompts are never auto-accepted, even with --bypass-consent)"
+        return 1
+    fi
+    local reply
+    read -rp "$1 [y/N]: " reply || return 1
+    [[ "$reply" =~ ^[Yy] ]]
+}
+
 # Read a line into the named variable, or auto-fill <auto-value> under
 # --bypass-consent (echoing the implied answer so the run stays auditable).
 ask() {  # ask <varname> <prompt> <auto-value>
@@ -581,7 +595,7 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
             echo "  If this isn't the server you expect — e.g. you deleted yours in a different"
             echo "  Hetzner project than this token points to — you can replace it now."
             if ! confirm "Reuse this existing server? (No = delete it and create a fresh one)"; then
-                if confirm "Permanently DELETE '$SERVER_NAME' (IP ${EXISTING_IP:-none}) and recreate it?"; then
+                if confirm_destructive "Permanently DELETE '$SERVER_NAME' (IP ${EXISTING_IP:-none}) and recreate it?"; then
                     info "Deleting server '$SERVER_NAME'..."
                     hcloud server delete "$SERVER_NAME"
                     ok "Deleted. A fresh server will be created below."
