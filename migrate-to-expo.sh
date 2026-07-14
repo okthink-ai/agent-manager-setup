@@ -183,18 +183,30 @@ kill_port_listeners() {
     return 0
 }
 
-# Run npm ci with retry on auth failures (403 from GitHub Packages). The
-# repo's .npmrc points the @okthink-ai scope at GitHub Packages, which needs
-# GITHUB_TOKEN — exported during preflight. npm ci (not install) so we get
-# exactly the dependency tree upstream tested and never rewrite the lockfile —
-# a rewritten lockfile would trip the clean-tree check on the next run.
+# Install dependencies with retry on auth failures (403 from GitHub Packages).
+# The repo's .npmrc points the @okthink-ai scope at GitHub Packages, which needs
+# GITHUB_TOKEN — exported during preflight.
+#
+# Prefer `npm ci`: it installs exactly the tree upstream tested and never
+# rewrites the lockfile (a rewrite would trip the clean-tree check next run).
+# But `npm ci` deletes node_modules BEFORE installing and hard-aborts on any
+# lockfile/package.json drift — so on failure it would strand a working box with
+# no dependencies. So we fall back to `npm install` when `npm ci` fails: it
+# reconciles drift and, worst case, leaves a usable tree. A lockfile the
+# fallback rewrites is harmless here — the clean-tree guard restores lockfile-
+# only churn on the next run.
 npm_install_with_retry() {
     local DIR="$1" LABEL="$2" MAX_RETRIES=3 ATTEMPT=0
     while true; do
         ATTEMPT=$((ATTEMPT + 1))
         info "Installing $LABEL dependencies (attempt $ATTEMPT)..."
         if ( load_nvm; cd "$DIR" && npm ci ); then
-            ok "$LABEL dependencies installed"
+            ok "$LABEL dependencies installed (npm ci)"
+            return 0
+        fi
+        warn "npm ci failed — retrying with 'npm install' (reconciles lockfile drift, non-destructive)..."
+        if ( load_nvm; cd "$DIR" && npm install ); then
+            ok "$LABEL dependencies installed (npm install fallback)"
             return 0
         fi
         if [[ $ATTEMPT -ge $MAX_RETRIES ]]; then
@@ -523,13 +535,30 @@ elif binds_nonloopback "$PORT"; then
 elif port_listening "$PORT"; then
     ok "The current server binds loopback only (localhost access) — leaving .env as is"
 elif command -v tailscale &>/dev/null && tailscale ip -4 &>/dev/null; then
-    info "No server is running, but Tailscale is connected — treating this as a"
-    info "remotely-accessed box (setup.sh installs are reached at http://<tailscale-ip>:$PORT)."
-    if confirm "Set CM_TERMINAL_ALLOW_LAN=1 in .env so it stays reachable remotely?"; then
-        enable_lan_flag
+    # Tailscale being up is NOT proof this box is accessed remotely — a Mac with
+    # Tailscale running is still typically used at http://localhost:$PORT. Enabling
+    # the flag binds 0.0.0.0, and the in-app terminal then treats its token as the
+    # only gate — any peer on the LAN/Tailnet that reaches this port can fetch the
+    # token and open a shell. On an unfirewalled box that's a real exposure, so we
+    # never widen it without a deliberate keystroke: under -y we leave it unset.
+    if [[ "$ASSUME_YES" == true ]]; then
+        warn "No server is running to inspect, and this is an unattended run (-y)."
+        warn "Tailscale is connected, but that alone isn't proof the box is reached"
+        warn "remotely — leaving .env unchanged so the server binds 127.0.0.1."
+        warn "If you DO reach it from another machine, run (then restart the server):"
+        warn "  echo 'CM_TERMINAL_ALLOW_LAN=1' >> $INSTALL_DIR/.env"
     else
-        warn "Skipped — the new server will bind 127.0.0.1 and remote access will stop working."
-        warn "Fix later with: echo 'CM_TERMINAL_ALLOW_LAN=1' >> $INSTALL_DIR/.env  (then restart)"
+        info "No server is running, but Tailscale is connected. setup.sh installs are"
+        info "reached at http://<tailscale-ip>:$PORT; a local-only box uses http://localhost:$PORT."
+        # Default No: only an explicit y widens the binding — a bare Enter keeps it
+        # loopback-only, so the safe answer is the one you get by not thinking.
+        reply=""
+        read -rp "==> Do you reach Agent Manager from another machine — set CM_TERMINAL_ALLOW_LAN=1? [y/N]: " reply || true
+        if [[ "$reply" =~ ^[Yy] ]]; then
+            enable_lan_flag
+        else
+            ok "Leaving .env unchanged (localhost only) — the server will bind 127.0.0.1."
+        fi
     fi
 else
     # No running server, no Tailscale — can't tell how this box is accessed.
@@ -543,7 +572,10 @@ else
     else
         echo "  Do you access Agent Manager from another machine (Tailscale/LAN IP),"
         echo "  or only via http://localhost:$PORT on this box?"
-        if confirm "Accessed remotely — set CM_TERMINAL_ALLOW_LAN=1?"; then
+        # Default No: a bare Enter keeps the binding loopback-only.
+        reply=""
+        read -rp "==> Accessed remotely — set CM_TERMINAL_ALLOW_LAN=1? [y/N]: " reply || true
+        if [[ "$reply" =~ ^[Yy] ]]; then
             enable_lan_flag
         else
             ok "Leaving .env unchanged (localhost only)"
