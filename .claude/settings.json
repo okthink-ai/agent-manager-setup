@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "https://localhost:4801/api/compaction-event",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "https://localhost:4801/api/compaction-done",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
