@@ -485,7 +485,14 @@ TS_IP=""
 if [[ "$ACCESS_MODE" == "tailscale" ]]; then
     section "Tailscale Access"
 
-    if ! tailscale_cli >/dev/null; then
+    if tailscale_cli >/dev/null; then
+        # Already installed — cask, App Store, or Homebrew formula all count.
+        if [[ -e "/Applications/Tailscale.app" ]]; then
+            ok "Tailscale already installed (Tailscale.app)"
+        else
+            ok "Tailscale already installed (CLI on PATH)"
+        fi
+    else
         info "Tailscale isn't installed."
         read -rp "Install it now with Homebrew (brew install --cask tailscale)? (y/n): " WANT_TS
         if [[ "$WANT_TS" =~ ^[Yy] ]]; then
@@ -498,15 +505,30 @@ if [[ "$ACCESS_MODE" == "tailscale" ]]; then
     fi
 
     if TS_BIN=$(tailscale_cli); then
-        # Signing in happens in the Tailscale menu-bar app, not the terminal.
-        # Poll until it reports an IP (i.e. the user signed in) or they skip.
+        # Poll until Tailscale reports an IP (i.e. it's signed in) or the user
+        # skips. Sign-in lives in the menu-bar app for the cask/App Store
+        # variants, but in the terminal for the Homebrew-formula daemon —
+        # the app bundle's presence tells the two worlds apart.
+        TS_OPENED=false
         while true; do
             TS_IP=$("$TS_BIN" ip -4 2>/dev/null | head -1) || TS_IP=""
             [[ -n "$TS_IP" ]] && break
-            open -a Tailscale 2>/dev/null || true
             echo ""
-            echo "  Tailscale isn't signed in yet. The Tailscale app should have opened —"
-            echo "  sign in there, with the same tailnet as the devices that will connect."
+            if [[ -e "/Applications/Tailscale.app" ]]; then
+                # Open the app once, not per retry — re-running `open` yanks it
+                # back to the foreground while the user is mid-sign-in.
+                if [[ "$TS_OPENED" == false ]]; then
+                    open -a Tailscale 2>/dev/null || true
+                    TS_OPENED=true
+                fi
+                echo "  Tailscale isn't signed in yet. Sign in via the Tailscale menu-bar app,"
+                echo "  with the same tailnet as the devices that will connect."
+            else
+                echo "  Tailscale isn't signed in yet. In another terminal, run:"
+                echo ""
+                printf "    ${CYAN}sudo brew services start tailscale${NC}   # if the daemon isn't running\n"
+                printf "    ${CYAN}sudo tailscale up${NC}                    # sign in via the printed URL\n"
+            fi
             echo ""
             read -rp "  Press Enter to re-check, or 's' to skip for now: " TS_SKIP
             [[ "$TS_SKIP" =~ ^[Ss] ]] && break
