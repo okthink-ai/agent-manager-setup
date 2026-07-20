@@ -131,10 +131,13 @@ INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 # How you'll reach Agent Manager. This decides how the server binds:
 #   localhost → loopback (127.0.0.1) only; reach it via an SSH tunnel. Most secure.
 #   direct    → all interfaces (0.0.0.0); reach it at http://<server-ip>:PORT.
+#               Also the right choice for Tailscale — tailscale0 is one of the
+#               interfaces, so the tailnet URL works with no extra setup.
 echo ""
 echo "  How will you reach Agent Manager on this box?"
 echo "    1) localhost — bind loopback only; reach it via an SSH tunnel (most secure)"
 echo "    2) direct IP — bind all interfaces; reach it at http://<server-ip>:$PORT"
+echo "                   (pick this for Tailscale too — the tailnet IP just works)"
 echo ""
 read -rp "Access mode [1=localhost / 2=direct IP] (default 1): " ACCESS_CHOICE
 case "$ACCESS_CHOICE" in
@@ -530,6 +533,10 @@ fi
 # ─── Done ─────────────────────────────────────────────────────────────
 
 SERVER_IP=$(hostname -I | awk '{print $1}')
+# If Tailscale is on the box, surface its IP too — hostname -I lists the
+# physical NIC first, but for tailnet users the 100.x address is the one
+# they'll actually open.
+TS_IP=$(tailscale ip -4 2>/dev/null | head -1) || TS_IP=""
 
 section "Install Complete!"
 
@@ -537,6 +544,7 @@ printf "  ${GREEN}App dir:${NC}      %s\n" "$INSTALL_DIR"
 printf "  ${GREEN}Access mode:${NC}  %s\n" "$ACCESS_MODE"
 if [[ "$ACCESS_MODE" == "direct" ]]; then
     printf "  ${GREEN}URL:${NC}          http://%s:%s\n" "$SERVER_IP" "$PORT"
+    [[ -n "$TS_IP" ]] && printf "  ${GREEN}Tailscale:${NC}    http://%s:%s\n" "$TS_IP" "$PORT"
 else
     printf "  ${GREEN}URL:${NC}          http://localhost:%s  (over an SSH tunnel)\n" "$PORT"
 fi
@@ -554,6 +562,7 @@ if [[ "$ACCESS_MODE" == "direct" ]]; then
     echo "  Access Agent Manager:"
     echo ""
     printf "    ${CYAN}http://%s:%s${NC}\n" "$SERVER_IP" "$PORT"
+    [[ -n "$TS_IP" ]] && printf "    ${CYAN}http://%s:%s${NC}  (from any device on your tailnet)\n" "$TS_IP" "$PORT"
     echo ""
     warn "hostname -I returned '$SERVER_IP' (the first address). If the box has"
     warn "multiple interfaces, substitute the IP you actually reach it on."
