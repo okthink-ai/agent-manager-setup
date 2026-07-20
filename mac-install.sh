@@ -3,8 +3,9 @@
 # mac-install.sh — Install Agent Manager on your Mac.
 #
 # Run this ON your Mac, as your normal user. This is the local-machine path:
-# no VPS, no SSH hardening, no Tailscale, no firewall — you reach the app at
-# http://localhost:4801 in your own browser.
+# no VPS, no SSH hardening, no firewall. You choose how to reach the app:
+# just this Mac's browser (http://localhost:4801) or also from your other
+# devices over your Tailscale network (e.g. a Mac mini used as a home server).
 #
 # It:
 #   1. Checks Homebrew and installs any missing base tools (git, tmux, gh)
@@ -12,6 +13,7 @@
 #   3. Authenticates GitHub CLI (interactive, or GH_TOKEN)
 #   4. Installs the AI coding agents you choose — Claude Code, Codex, Gemini, Pi
 #   5. Clones Agent Manager into a directory you choose and builds it (prod mode)
+#      (in tailscale mode, also installs Tailscale and walks you through sign-in)
 #   6. Optionally starts the server in a tmux session
 #
 # Optional env vars:
@@ -79,6 +81,19 @@ port_listening() {
     lsof -i ":$1" -sTCP:LISTEN &>/dev/null
 }
 
+# Locate the Tailscale CLI. Homebrew's cask and the App Store app both ship it
+# inside the app bundle rather than on PATH.
+TAILSCALE_APP_CLI="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+tailscale_cli() {
+    if command -v tailscale &>/dev/null; then
+        echo "tailscale"
+    elif [[ -x "$TAILSCALE_APP_CLI" ]]; then
+        echo "$TAILSCALE_APP_CLI"
+    else
+        return 1
+    fi
+}
+
 # Install an optional global npm CLI (idempotent). A failed install warns and
 # continues rather than aborting the whole setup.
 #   install_npm_cli <binary> <npm-package> <label> [auth-hint]
@@ -139,8 +154,32 @@ INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_DIR}"
 # Expand a leading ~ to $HOME (the shell won't, since it's inside a variable).
 INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 
+# How you'll reach Agent Manager. This decides how the server binds:
+#   localhost → loopback (127.0.0.1) only; this Mac's browser. Most private.
+#   tailscale → all interfaces (0.0.0.0); reach it from your other devices at
+#               http://<this-mac's-tailscale-ip>:PORT.
+echo ""
+echo "  How will you reach Agent Manager?"
+echo "    1) localhost — just this Mac's browser (most private)"
+echo "    2) tailscale — also from your other devices, over your Tailscale network"
+echo ""
+read -rp "Access mode [1=localhost / 2=tailscale] (default 1): " ACCESS_CHOICE
+case "$ACCESS_CHOICE" in
+    2|t*|T*) ACCESS_MODE="tailscale" ;;
+    *)       ACCESS_MODE="localhost" ;;
+esac
+
+# Env prefix for launching the server. Tailscale mode sets CM_TERMINAL_ALLOW_LAN=1
+# (bind 0.0.0.0); localhost mode omits it so the server binds loopback.
+if [[ "$ACCESS_MODE" == "tailscale" ]]; then
+    LAUNCH_ENV="CM_TERMINAL_ALLOW_LAN=1 PORT=$PORT"
+else
+    LAUNCH_ENV="PORT=$PORT"
+fi
+
 echo ""
 info "Installing Agent Manager into: $INSTALL_DIR"
+info "Access mode: $ACCESS_MODE"
 [[ -n "$GH_TOKEN" ]] && ok "GitHub token detected — will authenticate non-interactively"
 echo ""
 
@@ -386,12 +425,30 @@ npm_install_with_retry() {
 # One root install covers the frontend too (npm workspaces: apps/*).
 npm_install_with_retry "$INSTALL_DIR" "root"
 
-# Copy .env.example → .env if present and .env is absent. No CM_TERMINAL_ALLOW_LAN
-# here: the server binds loopback by default, and localhost works either way on
-# your own machine.
+# Copy .env.example → .env if present and .env is absent.
 if [[ -f "$INSTALL_DIR/.env.example" && ! -f "$INSTALL_DIR/.env" ]]; then
     cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
     ok "Copied .env.example to .env"
+fi
+
+# Configure the bind mode in .env. The server reads .env via dotenv and binds
+# 0.0.0.0 only when CM_TERMINAL_ALLOW_LAN=1; otherwise it binds loopback. Set
+# here (rather than only inline at launch) so UI-triggered restarts — which
+# don't pass the env var themselves — keep the same binding. BSD sed needs -i ''.
+touch "$INSTALL_DIR/.env"
+if [[ "$ACCESS_MODE" == "tailscale" ]]; then
+    # Ensure exactly one CM_TERMINAL_ALLOW_LAN=1 line.
+    sed -i '' '/^CM_TERMINAL_ALLOW_LAN=/d' "$INSTALL_DIR/.env"
+    echo 'CM_TERMINAL_ALLOW_LAN=1' >> "$INSTALL_DIR/.env"
+    ok "Set CM_TERMINAL_ALLOW_LAN=1 in .env (Tailscale access, binds 0.0.0.0)"
+else
+    # Localhost only: strip any LAN flag so the server binds loopback.
+    if grep -q '^CM_TERMINAL_ALLOW_LAN=' "$INSTALL_DIR/.env" 2>/dev/null; then
+        sed -i '' '/^CM_TERMINAL_ALLOW_LAN=/d' "$INSTALL_DIR/.env"
+        ok "Removed CM_TERMINAL_ALLOW_LAN from .env (localhost only, binds loopback)"
+    else
+        ok "Localhost only — server binds loopback (127.0.0.1)"
+    fi
 fi
 
 # Write Firebase config for the frontend (client-side keys, not secrets). Must be
@@ -422,6 +479,47 @@ ok "Frontend built"
 echo "prod" > "$INSTALL_DIR/.server-mode"
 ok "Server mode set to prod"
 
+# ─── Optional: Tailscale access ──────────────────────────────────────
+
+TS_IP=""
+if [[ "$ACCESS_MODE" == "tailscale" ]]; then
+    section "Tailscale Access"
+
+    if ! tailscale_cli >/dev/null; then
+        info "Tailscale isn't installed."
+        read -rp "Install it now with Homebrew (brew install --cask tailscale)? (y/n): " WANT_TS
+        if [[ "$WANT_TS" =~ ^[Yy] ]]; then
+            brew install --cask tailscale
+            ok "Tailscale installed"
+        else
+            warn "Skipping Tailscale install — the server will still bind all interfaces,"
+            warn "but the Tailscale URL won't work until you install the app and sign in."
+        fi
+    fi
+
+    if TS_BIN=$(tailscale_cli); then
+        # Signing in happens in the Tailscale menu-bar app, not the terminal.
+        # Poll until it reports an IP (i.e. the user signed in) or they skip.
+        while true; do
+            TS_IP=$("$TS_BIN" ip -4 2>/dev/null | head -1) || TS_IP=""
+            [[ -n "$TS_IP" ]] && break
+            open -a Tailscale 2>/dev/null || true
+            echo ""
+            echo "  Tailscale isn't signed in yet. The Tailscale app should have opened —"
+            echo "  sign in there, with the same tailnet as the devices that will connect."
+            echo ""
+            read -rp "  Press Enter to re-check, or 's' to skip for now: " TS_SKIP
+            [[ "$TS_SKIP" =~ ^[Ss] ]] && break
+        done
+        if [[ -n "$TS_IP" ]]; then
+            ok "Tailscale is up — this Mac's Tailscale IP: $TS_IP"
+        else
+            warn "Continuing without Tailscale sign-in. Sign in later via the menu-bar"
+            warn "app; this Mac's IP appears there and the URL below will start working."
+        fi
+    fi
+fi
+
 # ─── 6. Optionally start the server ──────────────────────────────────
 
 section "6/6  Start the Server"
@@ -434,6 +532,11 @@ if [[ "$START_NOW" =~ ^[Yy] ]]; then
     if port_listening "$PORT"; then
         ok "Server is already running on port $PORT"
         STARTED=true
+        if [[ "$ACCESS_MODE" == "tailscale" ]]; then
+            warn "If it was started before you chose Tailscale mode, it's still bound to"
+            warn "loopback — restart it to pick up the new binding:"
+            warn "  tmux kill-session -t am-server   then re-run this script"
+        fi
     elif tmux has-session -t am-server 2>/dev/null; then
         warn "tmux session 'am-server' already exists but nothing is listening on :$PORT."
         warn "Attach to see what happened: tmux attach -t am-server"
@@ -442,7 +545,7 @@ if [[ "$START_NOW" =~ ^[Yy] ]]; then
         tmux new-session -d -s am-server -c "$INSTALL_DIR"
         # Single-quote so the pane's shell expands $HOME/$NVM_DIR and sources nvm itself.
         tmux send-keys -t am-server \
-            'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '"PORT=$PORT npx tsx server/index.ts" Enter
+            'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '"$LAUNCH_ENV npx tsx server/index.ts" Enter
         # Poll for up to ~15s — a first `npx tsx` cold start (transpile + DB/model
         # init) can take several seconds before the port is listening.
         info "Waiting for the server to come up..."
@@ -467,20 +570,33 @@ fi
 section "Install Complete!"
 
 printf "  ${GREEN}App dir:${NC}  %s\n" "$INSTALL_DIR"
-printf "  ${GREEN}URL:${NC}      http://localhost:%s\n" "$PORT"
+if [[ "$ACCESS_MODE" == "tailscale" ]]; then
+    printf "  ${GREEN}URL:${NC}      http://%s:%s  (any device on your tailnet)\n" "${TS_IP:-<tailscale-ip>}" "$PORT"
+    printf "  ${GREEN}Local:${NC}    http://localhost:%s\n" "$PORT"
+else
+    printf "  ${GREEN}URL:${NC}      http://localhost:%s\n" "$PORT"
+fi
 echo ""
 
 if [[ ! "$START_NOW" =~ ^[Yy] ]]; then
     echo "  Start the server (in a tmux session so it survives closing the terminal):"
     echo ""
     printf "    ${CYAN}tmux new-session -d -s am-server -c %s${NC}\n" "$INSTALL_DIR"
-    printf "    ${CYAN}tmux send-keys -t am-server 'PORT=%s npx tsx server/index.ts' Enter${NC}\n" "$PORT"
+    printf "    ${CYAN}tmux send-keys -t am-server '%s npx tsx server/index.ts' Enter${NC}\n" "$LAUNCH_ENV"
     echo ""
 fi
 
 echo "  Then open in your browser:"
 echo ""
-printf "    ${CYAN}http://localhost:%s${NC}\n" "$PORT"
+if [[ "$ACCESS_MODE" == "tailscale" ]]; then
+    printf "    ${CYAN}http://%s:%s${NC}  (from any device on your tailnet)\n" "${TS_IP:-<tailscale-ip>}" "$PORT"
+    echo ""
+    printf "  ${YELLOW}Note:${NC} Tailscale mode binds all interfaces, so the dashboard is also\n"
+    echo "  reachable from this Mac's local network (e.g. home Wi-Fi) — not just the"
+    echo "  tailnet. Fine on a network you trust; worth knowing on one you don't."
+else
+    printf "    ${CYAN}http://localhost:%s${NC}\n" "$PORT"
+fi
 echo ""
 printf "  ${YELLOW}Remember:${NC} Set an Anthropic spend cap at console.anthropic.com\n"
 echo "  before running unattended agents."

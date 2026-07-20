@@ -128,7 +128,7 @@ Optional env vars: `GH_TOKEN` (a GitHub PAT with `repo` + `read:packages`, skips
 
 ## Quick Start — Mac
 
-The local-machine path: no VPS, no SSH, no Tailscale. Run it on your Mac as your normal user:
+The local-machine path: no VPS, no SSH. Run it on your Mac as your normal user:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/okthink-ai/agent-manager-setup/main/mac-install.sh
@@ -143,7 +143,11 @@ This will:
 - Clone Agent Manager into a directory you choose and build it (prod mode)
 - Optionally start the server in a tmux session
 
-Then open `http://localhost:4801` in your browser.
+**Choose your access mode.** The script asks how you'll reach the app:
+
+1. **localhost** (default, most private) — for your everyday Mac. Open `http://localhost:4801` in your own browser; nothing is reachable from other machines.
+
+2. **tailscale** — for a Mac that serves other devices (say, a Mac mini in a closet). The script installs Tailscale via Homebrew if needed, walks you through signing in to the menu-bar app, and binds the server so any device on your tailnet can open `http://<the-mac's-tailscale-ip>:4801`. Note this binds all interfaces, so the dashboard is also reachable from the Mac's local network (e.g. home Wi-Fi) — fine on a trusted network.
 
 It won't clobber an existing checkout, `.env` files, or your Claude Code settings, and the same `GH_TOKEN` / `PORT` env vars apply.
 
@@ -186,7 +190,7 @@ Prices and exact type availability change over time — the script always reads 
 | Claude Code | The CLI tool that Agent Manager monitors | All (on request) |
 | Codex / Gemini / Pi CLIs | Optional — other terminal coding agents | All (on request) |
 | tmux | Session persistence for long-running processes | All |
-| Tailscale | Private networking — access the dashboard without exposing ports | Hetzner VPS only |
+| Tailscale | Private networking — access the dashboard without exposing ports | Hetzner VPS; Mac (optional) |
 | fail2ban | SSH brute-force protection | Hetzner VPS only |
 
 ## Updating an Existing Install
