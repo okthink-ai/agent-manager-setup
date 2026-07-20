@@ -88,7 +88,7 @@ After SSH hardening, setup switches to the non-root user for everything that fol
 TS_AUTHKEY=tskey-... GH_TOKEN=ghp_... bash setup.sh
 ```
 
-This removes the two browser logins only — `setup.sh` is not a fully hands-off run. It still prompts for the username, git identity, the SSH-access safety check, Claude Code auth, the optional-CLI choices, and whether to start the server, so keep a terminal attached.
+This removes the two browser logins only — `setup.sh` is not a fully hands-off run. It still prompts for the username, git identity, the projects directory, the SSH-access safety check, Claude Code auth, the optional-CLI choices, and whether to start the server, so keep a terminal attached.
 
 ### 3. Access the dashboard
 
