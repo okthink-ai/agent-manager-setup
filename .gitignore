@@ -1,5 +1,8 @@
 # Personal Claude Code settings (merged locally by Claude Code, never shared)
 .claude/settings.local.json
+# Claude Manager hook config — personal tooling pointing at a localhost server,
+# removed from the repo by the hygiene pass; ignore the local leftover
+.claude/settings.json
 
 # Claude Manager sidebar icons (personal tooling, not part of the repo)
 .claude-manager-images/
