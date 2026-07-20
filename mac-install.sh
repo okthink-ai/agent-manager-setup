@@ -466,7 +466,13 @@ fi
 # Seed the projects directory so the dashboard isn't empty on first load. The
 # UI's Settings panel writes to the DB, which takes priority over this value.
 if [[ -n "$CODE_DIRS_INPUT" ]]; then
-    mkdir -p "$CODE_DIRS_INPUT"
+    # The answer may be a comma-separated list (same format as the Settings
+    # field) — create each entry, not one path with commas in the middle.
+    echo "$CODE_DIRS_INPUT" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | while IFS= read -r dir; do
+        if [[ -n "$dir" ]]; then
+            mkdir -p "${dir/#\~/$HOME}"
+        fi
+    done
     echo "CODE_DIRS=$CODE_DIRS_INPUT" >> "$INSTALL_DIR/.env"
     ok "Projects directory set: $CODE_DIRS_INPUT (change anytime in Settings)"
 else

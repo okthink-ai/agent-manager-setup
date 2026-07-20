@@ -560,7 +560,13 @@ else
     read -rp "Projects directory to show in Agent Manager [$DEFAULT_CODE_DIRS]: " CODE_DIRS_INPUT
     CODE_DIRS_INPUT="${CODE_DIRS_INPUT:-$DEFAULT_CODE_DIRS}"
     CODE_DIRS_INPUT="${CODE_DIRS_INPUT/#\~//home/$NEW_USER}"
-    run_as_user "mkdir -p '$CODE_DIRS_INPUT'"
+    # The answer may be a comma-separated list (same format as the Settings
+    # field) — create each entry, not one path with commas in the middle.
+    echo "$CODE_DIRS_INPUT" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | while IFS= read -r dir; do
+        if [[ -n "$dir" ]]; then
+            run_as_user "mkdir -p '${dir/#\~//home/$NEW_USER}'"
+        fi
+    done
     echo "CODE_DIRS=$CODE_DIRS_INPUT" >> "$INSTALL_DIR/.env"
     ok "Projects directory set: $CODE_DIRS_INPUT (change anytime in Settings)"
 fi
