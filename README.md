@@ -163,6 +163,8 @@ For every path:
 
 Only for the Hetzner VPS path:
 - A Hetzner Cloud account ([console.hetzner.cloud](https://console.hetzner.cloud))
+
+For the Hetzner VPS path — and the Mac path if you choose Tailscale access:
 - A Tailscale account ([tailscale.com](https://tailscale.com))
 
 ## Server Specs (Hetzner path)
