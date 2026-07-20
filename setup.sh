@@ -549,6 +549,28 @@ else
     ok "Set CM_TERMINAL_ALLOW_LAN=1 in .env (server binds 0.0.0.0 for Tailscale access)"
 fi
 
+# Seed the projects directory so the dashboard isn't empty on first load. The
+# UI's Settings panel writes to the DB, which takes priority over this value —
+# so don't re-ask if a previous run already seeded it. A leading ~ means the
+# app user's home, not root's.
+if grep -q '^CODE_DIRS=' "$INSTALL_DIR/.env" 2>/dev/null; then
+    ok "CODE_DIRS already set in .env — keeping it"
+else
+    DEFAULT_CODE_DIRS="/home/$NEW_USER/dev"
+    read -rp "Projects directory to show in Agent Manager [$DEFAULT_CODE_DIRS]: " CODE_DIRS_INPUT
+    CODE_DIRS_INPUT="${CODE_DIRS_INPUT:-$DEFAULT_CODE_DIRS}"
+    CODE_DIRS_INPUT="${CODE_DIRS_INPUT/#\~//home/$NEW_USER}"
+    # The answer may be a comma-separated list (same format as the Settings
+    # field) — create each entry, not one path with commas in the middle.
+    echo "$CODE_DIRS_INPUT" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | while IFS= read -r dir; do
+        if [[ -n "$dir" ]]; then
+            run_as_user "mkdir -p '${dir/#\~//home/$NEW_USER}'"
+        fi
+    done
+    echo "CODE_DIRS=$CODE_DIRS_INPUT" >> "$INSTALL_DIR/.env"
+    ok "Projects directory set: $CODE_DIRS_INPUT (change anytime in Settings)"
+fi
+
 # Write Firebase config for the frontend (client-side keys, not secrets). Must
 # be in place BEFORE the build — Expo inlines EXPO_PUBLIC_* env at export time.
 # Fallback copy — canonical values live in firebase-defaults.env; keep all four scripts in sync.

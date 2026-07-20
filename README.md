@@ -77,6 +77,7 @@ This will:
 - **Switch to the non-root user** for all application work
 - Clone and install Agent Manager
 - Build the frontend for production
+- Ask where your projects live and preconfigure the dashboard's project list (changeable anytime in Settings)
 - Optionally start the server in a tmux session
 
 After SSH hardening, setup switches to the non-root user for everything that follows — GitHub/AI authentication, the Agent Manager checkout, the build, and the running server all happen as that user, never as root (only `apt` and `tailscale up` still use root, where the OS requires it).
@@ -112,6 +113,7 @@ This will:
 - Install GitHub CLI and authenticate (interactive, or via `GH_TOKEN`)
 - Install the AI coding agents you choose — Claude Code, Codex, Gemini, and/or Pi
 - Clone Agent Manager into a directory you choose and build it
+- Ask where your projects live and preconfigure the dashboard's project list (changeable anytime in Settings)
 - Optionally start the server in a tmux session
 
 **Choose your access mode.** The script asks how you'll reach the app:
@@ -141,6 +143,7 @@ This will:
 - Authenticate GitHub CLI (interactive, or via `GH_TOKEN`)
 - Install the AI coding agents you choose — Claude Code, Codex, Gemini, and/or Pi
 - Clone Agent Manager into a directory you choose and build it (prod mode)
+- Ask where your projects live and preconfigure the dashboard's project list (changeable anytime in Settings)
 - Optionally start the server in a tmux session
 
 **Choose your access mode.** The script asks how you'll reach the app:
