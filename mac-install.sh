@@ -177,6 +177,18 @@ else
     LAUNCH_ENV="PORT=$PORT"
 fi
 
+# Where your projects live — the dashboard lists projects and launch targets
+# from here, and shows nothing until it's configured. Seeded into .env as
+# CODE_DIRS later; the UI's Settings panel (stored in the DB) takes priority,
+# so don't re-ask if a previous run already seeded it.
+CODE_DIRS_INPUT=""
+if ! grep -q '^CODE_DIRS=' "$INSTALL_DIR/.env" 2>/dev/null; then
+    DEFAULT_CODE_DIRS="$HOME/dev"
+    read -rp "Projects directory to show in Agent Manager [$DEFAULT_CODE_DIRS]: " CODE_DIRS_INPUT
+    CODE_DIRS_INPUT="${CODE_DIRS_INPUT:-$DEFAULT_CODE_DIRS}"
+    CODE_DIRS_INPUT="${CODE_DIRS_INPUT/#\~/$HOME}"
+fi
+
 echo ""
 info "Installing Agent Manager into: $INSTALL_DIR"
 info "Access mode: $ACCESS_MODE"
@@ -449,6 +461,16 @@ else
     else
         ok "Localhost only — server binds loopback (127.0.0.1)"
     fi
+fi
+
+# Seed the projects directory so the dashboard isn't empty on first load. The
+# UI's Settings panel writes to the DB, which takes priority over this value.
+if [[ -n "$CODE_DIRS_INPUT" ]]; then
+    mkdir -p "$CODE_DIRS_INPUT"
+    echo "CODE_DIRS=$CODE_DIRS_INPUT" >> "$INSTALL_DIR/.env"
+    ok "Projects directory set: $CODE_DIRS_INPUT (change anytime in Settings)"
+else
+    ok "CODE_DIRS already set in .env — keeping it"
 fi
 
 # Write Firebase config for the frontend (client-side keys, not secrets). Must be
