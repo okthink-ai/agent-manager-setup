@@ -122,7 +122,7 @@ This will:
    ssh -L 4801:localhost:4801 you@your-server
    ```
 
-2. **direct IP** — the server binds all interfaces and you open `http://<server-ip>:4801` directly. Only pick this if the port is protected by your own firewall or private network.
+2. **direct IP** — the server binds all interfaces and you open `http://<server-ip>:4801` directly. This is also the right choice if the box runs Tailscale: the tailnet interface is included, so `http://<tailscale-ip>:4801` works from any device on your tailnet with no extra setup. Otherwise, only pick this if the port is protected by your own firewall or private network.
 
 Optional env vars: `GH_TOKEN` (a GitHub PAT with `repo` + `read:packages`, skips the browser login) and `PORT` (default 4801).
 
