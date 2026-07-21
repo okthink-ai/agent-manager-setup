@@ -23,6 +23,9 @@
 #                 tailscale up refuses it. Used for demo boxes so guest access
 #                 can be scoped by ACL to the dashboard port only.
 #   GH_TOKEN    — GitHub PAT with repo + read:packages (skips the browser login)
+#   SSH_ALIAS   — the Host alias provisioning wrote to your laptop's SSH config
+#                 (default agent-manager-vps; demo boxes use agent-manager-demo).
+#                 Only affects the printed summary.
 #
 # Designed to be idempotent — safe to re-run after a failure.
 #
@@ -85,6 +88,11 @@ REPO_URL="https://github.com/okthink-ai/claude-manager.git"
 TS_AUTHKEY="${TS_AUTHKEY:-${TAILSCALE_AUTHKEY:-}}"
 TS_TAGS="${TS_TAGS:-}"
 GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+
+# SSH alias the completion summary tells you to edit/use on your laptop.
+# provision.sh writes agent-manager-vps for production, agent-manager-demo
+# for --demo boxes.
+SSH_ALIAS="${SSH_ALIAS:-agent-manager-vps}"
 
 # Extra args for tailscale up. --advertise-tags requires the tag to be declared
 # in the tailnet ACL's tagOwners — see the README's Demo Box section.
@@ -263,6 +271,16 @@ section "5/8  Tailscale"
 if command -v tailscale &>/dev/null && tailscale status &>/dev/null; then
     TAILSCALE_IP=$(tailscale ip -4)
     ok "Tailscale already connected: $TAILSCALE_IP"
+    # A re-run skips `tailscale up`, which would silently drop the requested
+    # tags — and the demo ACL grants guest access by tag. Re-advertise if the
+    # node doesn't already carry them. If the tag isn't declared under
+    # tagOwners in the tailnet ACL, tailscale up fails loudly here — that's
+    # the right outcome (fix the ACL, then re-run).
+    if [[ -n "$TS_TAGS" ]] && ! tailscale status --json | grep -q "\"$TS_TAGS\""; then
+        info "Node is missing requested tags ($TS_TAGS) — re-advertising on the existing connection..."
+        tailscale up --advertise-tags="$TS_TAGS"
+        ok "Tags applied: $TS_TAGS"
+    fi
 else
     info "Installing Tailscale..."
     curl -fsSL https://tailscale.com/install.sh | sh
@@ -642,7 +660,7 @@ echo "  Next steps:"
 echo ""
 printf "  ${STEP}. Update your laptop's SSH config to use '%s' instead of root:\n" "$NEW_USER"
 echo ""
-printf "     ${CYAN}Host agent-manager-vps\n"
+printf "     ${CYAN}Host %s\n" "$SSH_ALIAS"
 printf "         User %s${NC}\n" "$NEW_USER"
 STEP=$((STEP + 1))
 
@@ -656,7 +674,7 @@ else
     echo ""
     printf "  ${STEP}. SSH in as %s and start the server:\n" "$NEW_USER"
     echo ""
-    printf "     ${CYAN}ssh agent-manager-vps${NC}\n"
+    printf "     ${CYAN}ssh %s${NC}\n" "$SSH_ALIAS"
     printf "     ${CYAN}cd ~/dev/claude-manager${NC}\n"
     printf "     ${CYAN}PORT=4801 npx tsx server/index.ts${NC}\n"
     echo ""

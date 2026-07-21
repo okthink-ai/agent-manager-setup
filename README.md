@@ -173,18 +173,21 @@ Then, before running setup, declare a demo tag in your tailnet's ACL (admin cons
 {
   "tagOwners": { "tag:demo": ["autogroup:admin"] },
   "acls": [
-    // ...your existing rules...
+    // Your own devices keep full access to everything:
+    { "action": "accept", "src": ["autogroup:member"], "dst": ["*:*"] },
     // Guests you share the box with can reach the dashboard, nothing else:
     { "action": "accept", "src": ["autogroup:shared"], "dst": ["tag:demo:4801"] }
   ]
 }
 ```
 
-And set up with the tag:
+Tailscale ACLs have no deny rules, so the guest scoping only works if you **replace** the stock allow-all rule (`"src": ["*"]`) — its wildcard source matches shared guests too, which would give them every port on the box regardless of the rule below it. Narrowing the source to `autogroup:member` (your own devices; it excludes shared-in users) makes the `autogroup:shared` rule the only grant guests match. To verify, from a guest account check that `nc -vz <demo-box-tailscale-ip> 22` is refused while port 4801 connects.
+
+And set up with the tag (plus the demo SSH alias, so the completion summary references the right host entry):
 
 ```bash
 ssh agent-manager-demo
-TS_TAGS=tag:demo bash setup.sh
+TS_TAGS=tag:demo SSH_ALIAS=agent-manager-demo bash setup.sh
 ```
 
 ### 2. Invite a guest

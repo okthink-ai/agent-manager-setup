@@ -119,6 +119,12 @@ if [[ "$DEMO" == true ]]; then
     MIN_RAM_GB=4
     SERVER_NAME="agent-manager-demo"
     SSH_CONFIG_HOST="agent-manager-demo"
+    # Own firewall object, not the production one: the rules are identical, but
+    # the lifecycles aren't — the stale-rules self-heal deletes and recreates
+    # the firewall, which Hetzner refuses while it's attached to another
+    # (production) server, and tearing down a disposable demo box must never
+    # touch production resources.
+    FIREWALL_NAME="agent-manager-demo-firewall"
     [[ -z "$LOCATION_OVERRIDE" ]] && LOCATION_OVERRIDE="ash"
     info "Demo mode: floor ${MIN_VCPU} vCPU / ${MIN_RAM_GB} GB, location ${LOCATION_OVERRIDE}, server '$SERVER_NAME'"
 fi
