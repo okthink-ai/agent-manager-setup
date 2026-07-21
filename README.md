@@ -23,6 +23,7 @@ Setup scripts for installing [Agent Manager](https://github.com/okthink-ai/claud
 | A **new Hetzner VPS** (we create it for you) | `provision.sh` → `setup.sh` | On your laptop, then on the new server |
 | An **Ubuntu server you already own** | `ubuntu-install.sh` | On the server |
 | **Your Mac** | `mac-install.sh` | On the Mac |
+| A **cheap demo box** guests can play with over Tailscale | `provision.sh --demo` → `setup.sh` | On your laptop, then on the demo box — see [Demo Box](#demo-box--a-cheap-instance-guests-can-play-with) |
 | A box that **already has Agent Manager** and needs updating | `migrate-to-expo.sh` | On the box — see [Updating an Existing Install](#updating-an-existing-install) |
 
 All scripts are idempotent — if one fails partway, re-run it and it picks up where it left off.
@@ -153,6 +154,53 @@ This will:
 2. **tailscale** — for a Mac that serves other devices (say, a Mac mini in a closet). The script installs Tailscale via Homebrew if needed, walks you through signing in to the menu-bar app, and binds the server so any device on your tailnet can open `http://<the-mac's-tailscale-ip>:4801`. Note this binds all interfaces, so the dashboard is also reachable from the Mac's local network (e.g. home Wi-Fi) — fine on a trusted network.
 
 It won't clobber an existing checkout, `.env` files, or your Claude Code settings, and the same `GH_TOKEN` / `PORT` env vars apply.
+
+## Demo Box — a cheap instance guests can play with
+
+For showing Agent Manager to people without giving them your production box: provision a small US instance and grant each guest access to *just that machine* via [Tailscale machine sharing](https://tailscale.com/kb/1084/sharing) — free on all plans, per-person, revocable, and no inbound ports ever open to the internet.
+
+### 1. Provision and set up
+
+```bash
+bash provision.sh --demo
+```
+
+Same flow as the production path, but with a 2 vCPU / 4 GB floor (typically a CPX21 in the US — roughly half the production cost), Ashburn as the default region (`--location hil` for Oregon), and distinct names (`agent-manager-demo` server + SSH host) so it coexists with your production box. 4 GB is enough to build the frontend natively and run a couple of guest agent sessions.
+
+Then, before running setup, declare a demo tag in your tailnet's ACL (admin console → Access Controls) so the box can be scoped by policy:
+
+```jsonc
+{
+  "tagOwners": { "tag:demo": ["autogroup:admin"] },
+  "acls": [
+    // Your own devices keep full access to everything:
+    { "action": "accept", "src": ["autogroup:member"], "dst": ["*:*"] },
+    // Guests you share the box with can reach the dashboard, nothing else:
+    { "action": "accept", "src": ["autogroup:shared"], "dst": ["tag:demo:4801"] }
+  ]
+}
+```
+
+Tailscale ACLs have no deny rules, so the guest scoping only works if you **replace** the stock allow-all rule (`"src": ["*"]`) — its wildcard source matches shared guests too, which would give them every port on the box regardless of the rule below it. Narrowing the source to `autogroup:member` (your own devices; it excludes shared-in users) makes the `autogroup:shared` rule the only grant guests match. To verify, from a guest account check that `nc -vz <demo-box-tailscale-ip> 22` is refused while port 4801 connects.
+
+And set up with the tag (plus the demo SSH alias, so the completion summary references the right host entry):
+
+```bash
+ssh agent-manager-demo
+TS_TAGS=tag:demo SSH_ALIAS=agent-manager-demo bash setup.sh
+```
+
+### 2. Invite a guest
+
+In the Tailscale admin console → **Machines** → the demo box → **Share** → send the invite link. The guest accepts with any free Tailscale account; they see **only this machine** (not your tailnet), and the ACL above limits them to the dashboard port — no SSH. Shared users don't count toward your plan's user limit.
+
+They open `http://<demo-box-tailscale-ip>:4801` and can browse sessions, launch agents, and play.
+
+### 3. Revoke a guest
+
+**Machines** → the demo box → shared-with list → remove the person. Immediate, per-guest, doesn't affect anyone else.
+
+**Notes:** guests drive real agent sessions using whatever accounts the box is authenticated with — a subscription-based Claude login works fine for this. The demo box is a full real install, so `migrate-to-expo.sh` keeps it updated like any other box.
 
 ## Choosing Your Agents
 

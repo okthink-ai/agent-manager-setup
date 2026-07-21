@@ -8,9 +8,14 @@
 #
 # Either way, it generates an SSH key (if needed), writes ~/.ssh/config, and scp's setup.sh to the server.
 #
-# Usage: bash provision.sh [-y|--bypass-consent]
+# Usage: bash provision.sh [-y|--bypass-consent] [--demo]
 #   --bypass-consent  Run unattended — accept every consent prompt and use the
 #                     default choices (suggested location, cheapest server type).
+#   --demo            Provision a cheap demo box instead of a production one:
+#                     lower spec floor (2 vCPU / 4 GB), defaults to the US
+#                     (Ashburn), distinct server + SSH names so it can coexist
+#                     with a production box. Share it with guests via Tailscale
+#                     machine sharing — see the README's Demo Box section.
 #
 set -euo pipefail
 
@@ -29,6 +34,12 @@ IMAGE="ubuntu-24.04"
 # that region. SERVER_TYPE is resolved at runtime, not hardcoded.
 MIN_VCPU=4
 MIN_RAM_GB=8
+
+# When true (set by --demo), provision a cheap guest-facing demo box instead of
+# a production instance: the floor drops to 2 vCPU / 4 GB (enough to build the
+# frontend natively and run a couple of guest sessions), the location defaults
+# to the US, and the server/SSH names get a -demo suffix so both boxes coexist.
+DEMO=false
 
 # When true (set by -y/--bypass-consent), every consent prompt is auto-accepted
 # and selection prompts use their defaults — for unattended/automated runs.
@@ -78,6 +89,9 @@ Options:
       --location <name>  Region to provision in (e.g. fsn1, ash, hel1). Skips
                          the location prompt; pair with --bypass-consent when
                          geo-IP can't detect your nearest region.
+      --demo             Provision a cheap demo box: 2 vCPU / 4 GB floor,
+                         defaults to Ashburn (US), named agent-manager-demo.
+                         Combine with --location to pick a different region.
   -h, --help             Show this help and exit.
 EOF
 }
@@ -91,11 +105,29 @@ while [[ $# -gt 0 ]]; do
             [[ -z "$LOCATION_OVERRIDE" ]] && { err "--location needs a value (e.g. --location fsn1)"; exit 1; }
             shift ;;
         --location=*) LOCATION_OVERRIDE="${1#*=}" ;;
+        --demo) DEMO=true ;;
         -h|--help) usage; exit 0 ;;
         *) err "Unknown option: $1"; echo "" >&2; usage >&2; exit 1 ;;
     esac
     shift
 done
+
+# Demo mode: cheaper floor, US default, distinct names. Applied after parsing
+# so an explicit --location still wins over the Ashburn default.
+if [[ "$DEMO" == true ]]; then
+    MIN_VCPU=2
+    MIN_RAM_GB=4
+    SERVER_NAME="agent-manager-demo"
+    SSH_CONFIG_HOST="agent-manager-demo"
+    # Own firewall object, not the production one: the rules are identical, but
+    # the lifecycles aren't — the stale-rules self-heal deletes and recreates
+    # the firewall, which Hetzner refuses while it's attached to another
+    # (production) server, and tearing down a disposable demo box must never
+    # touch production resources.
+    FIREWALL_NAME="agent-manager-demo-firewall"
+    [[ -z "$LOCATION_OVERRIDE" ]] && LOCATION_OVERRIDE="ash"
+    info "Demo mode: floor ${MIN_VCPU} vCPU / ${MIN_RAM_GB} GB, location ${LOCATION_OVERRIDE}, server '$SERVER_NAME'"
+fi
 
 # Yes/no prompt. Empty input (just Enter) counts as yes. Returns 0 for yes, 1
 # for no. Always used as an if-condition, so it's safe under `set -e`; an EOF
