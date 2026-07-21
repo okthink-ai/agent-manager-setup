@@ -160,7 +160,7 @@ fi
 CODE_DIRS_INPUT=""
 if ! grep -q '^CODE_DIRS=' "$INSTALL_DIR/.env" 2>/dev/null; then
     DEFAULT_CODE_DIRS="$HOME/dev"
-    read -rp "Projects directory to show in Agent Manager [$DEFAULT_CODE_DIRS]: " CODE_DIRS_INPUT
+    read -rp "Projects directory to show in Agent Manager (first-run default) [$DEFAULT_CODE_DIRS]: " CODE_DIRS_INPUT
     CODE_DIRS_INPUT="${CODE_DIRS_INPUT:-$DEFAULT_CODE_DIRS}"
     CODE_DIRS_INPUT="${CODE_DIRS_INPUT/#\~/$HOME}"
 fi
@@ -462,7 +462,7 @@ if [[ -n "$CODE_DIRS_INPUT" ]]; then
         fi
     done
     echo "CODE_DIRS=$CODE_DIRS_INPUT" >> "$INSTALL_DIR/.env"
-    ok "Projects directory set: $CODE_DIRS_INPUT (change anytime in Settings)"
+    ok "Projects directory seeded: $CODE_DIRS_INPUT (a value set in the app's Settings wins)"
 else
     ok "CODE_DIRS already set in .env — keeping it"
 fi

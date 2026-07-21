@@ -71,6 +71,20 @@ fi
 read -rp "Git name (for commits, e.g. 'Jane Smith'): " GIT_NAME
 read -rp "Git email (for commits): " GIT_EMAIL
 
+# Where your projects live — the dashboard lists projects and launch targets
+# from here, and shows nothing until it's configured. Asked here so the long
+# unattended stretch (apt, npm install, build) isn't interrupted by a prompt;
+# written to .env in step 8. The UI's Settings panel (stored in the DB) takes
+# priority over the seeded value, so don't re-ask if a previous run seeded it.
+CODE_DIRS_INPUT=""
+if ! grep -q '^CODE_DIRS=' "/home/$NEW_USER/dev/claude-manager/.env" 2>/dev/null; then
+    DEFAULT_CODE_DIRS="/home/$NEW_USER/dev"
+    read -rp "Projects directory to show in Agent Manager (first-run default) [$DEFAULT_CODE_DIRS]: " CODE_DIRS_INPUT
+    CODE_DIRS_INPUT="${CODE_DIRS_INPUT:-$DEFAULT_CODE_DIRS}"
+    # A leading ~ means the app user's home, not root's.
+    CODE_DIRS_INPUT="${CODE_DIRS_INPUT/#\~//home/$NEW_USER}"
+fi
+
 REPO_URL="https://github.com/okthink-ai/claude-manager.git"
 
 # Optional non-interactive auth. Export these before running to skip the
@@ -549,17 +563,10 @@ else
     ok "Set CM_TERMINAL_ALLOW_LAN=1 in .env (server binds 0.0.0.0 for Tailscale access)"
 fi
 
-# Seed the projects directory so the dashboard isn't empty on first load. The
-# UI's Settings panel writes to the DB, which takes priority over this value —
-# so don't re-ask if a previous run already seeded it. A leading ~ means the
-# app user's home, not root's.
-if grep -q '^CODE_DIRS=' "$INSTALL_DIR/.env" 2>/dev/null; then
-    ok "CODE_DIRS already set in .env — keeping it"
-else
-    DEFAULT_CODE_DIRS="/home/$NEW_USER/dev"
-    read -rp "Projects directory to show in Agent Manager [$DEFAULT_CODE_DIRS]: " CODE_DIRS_INPUT
-    CODE_DIRS_INPUT="${CODE_DIRS_INPUT:-$DEFAULT_CODE_DIRS}"
-    CODE_DIRS_INPUT="${CODE_DIRS_INPUT/#\~//home/$NEW_USER}"
+# Seed the projects directory (asked upfront) so the dashboard isn't empty on
+# first load. The UI's Settings panel writes to the DB, which takes priority
+# over this seeded value.
+if [[ -n "$CODE_DIRS_INPUT" ]]; then
     # The answer may be a comma-separated list (same format as the Settings
     # field) — create each entry, not one path with commas in the middle.
     echo "$CODE_DIRS_INPUT" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | while IFS= read -r dir; do
@@ -568,7 +575,9 @@ else
         fi
     done
     echo "CODE_DIRS=$CODE_DIRS_INPUT" >> "$INSTALL_DIR/.env"
-    ok "Projects directory set: $CODE_DIRS_INPUT (change anytime in Settings)"
+    ok "Projects directory seeded: $CODE_DIRS_INPUT (a value set in the app's Settings wins)"
+else
+    ok "CODE_DIRS already set in .env — keeping it"
 fi
 
 # Write Firebase config for the frontend (client-side keys, not secrets). Must
