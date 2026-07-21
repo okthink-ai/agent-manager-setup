@@ -2,18 +2,25 @@
 
 Setup scripts for installing [Agent Manager](https://github.com/okthink-ai/claude-manager) — on a fresh Hetzner VPS, an Ubuntu server you already own, or your Mac.
 
-`provision.sh` greets you with a bodega-style splash — a braille rendering of the project wordmark (shown here without its terminal color):
+`provision.sh` greets you with a retro splash — a braille rendering of the "agent manager" wordmark (shown here without its terminal color):
 
 ```text
-   ⢀⣠⡴⠶⢾⣿⣿⣿⣿                    ⠈⢹⣿⣿⣿⡇              ⢠⣴⣶⡄
-  ⢰⣿⣃⣀  ⣿⣿⣿⣟⣠⣤⣤⣄⡀   ⣠⣤⠴⣤⣤⣀   ⣀⣤⣴⠦⣼⣿⣿⣿⡇ ⢀⣠⡴⢶⣤⣄  ⢀⣠⣤⠶⢦⣿⣝⠛⠃⢀⣤⡤⠶⣶⣤
-  ⢿⣿⣿⣿⡷ ⣿⣿⣿⣿⠉⠹⣿⣿⣿⡄⢠⣾⣿⡇ ⠸⣿⣿⣧ ⣼⣿⣿⡇ ⢸⣿⣿⣿⡇⣰⣿⣿  ⣿⣿⣷⢠⣿⣿⣿ ⠈⣿⣿⣷⡀⣿⣿⣷ ⣿⣿
-  ⠈⠙⠛⠛⠁ ⣿⣿⣿⣿  ⣿⣿⣿⡇⣿⣿⣿⡇  ⣿⣿⣿⣷⣿⣿⣿⡆ ⢸⣿⣿⣿⡇⣿⣿⣿⡴⠞⠛⠋⠉⠸⣿⣿⣿  ⣿⣿⣿⠃⢈⣩⣥⡶⣿⣿
-        ⣿⣿⣿⣿  ⣿⣿⣿⠇⢻⣿⣿⣧  ⣿⣿⣿⠉⣿⣿⣿⣇ ⢸⣿⣿⣿⡇⢿⣿⣿⣷⣄⣀⣀⣠⡄⣉⡿⠿⠦⠴⠿⠛⠁⢰⣿⣿⣿ ⣿⣿
-        ⠛⠛⠛⠋⢀⣴⣿⠿⠋  ⠙⠿⣿⣄⣠⡿⠟⠁ ⠘⠿⣿⣿⡷⢿⣿⣿⡿⠧⠈⠻⢿⣿⣿⣿⠿⠋⢰⣿⣷⣶⣶⣾⣿⣿⣶⣜⢿⣿⣿⡿⢻⣿
-                                     ⣠⣴⣶⣶⠶⠶⠶⣤⣄⣈⠛⠿⠿⠿⠿⠿⠿⣿⣿    ⠈⢿
+                                            ⢸⣿⣿
+   ⣶⣶⣶⣶⣶⣦⣄   ⣠⣴⣶⣶⣄⣰⣶⣶   ⣀⣤⣶⣶⣶⣦⣄   ⣶⣶⣆⣤⣶⣶⣦⡀ ⣶⣾⣿⣿⣶⣶⣶
+   ⣉⣤⣤⣤⣬⣿⣿⡆ ⣸⣿⣿⠋ ⠈⢿⣿⣿  ⣰⣿⣿⠋ ⠈⣿⣿⣆  ⣿⣿⡟⠁ ⢻⣿⣿  ⢸⣿⣿
+  ⣼⣿⣿⠋⠉⢉⣿⣿⡇ ⢿⣿⣿   ⣸⣿⣿  ⢿⣿⣿⠿⠿⠿⠿⠿⠿  ⣿⣿⡇  ⢸⣿⣿  ⢸⣿⣿
+  ⠹⣿⣿⣦⣤⠾⣿⣿⡇ ⠘⢿⣿⣧⣤⡴⢿⣿⣿  ⠈⠿⣿⣶⣤⣤⣤⣶⡇  ⣿⣿⡇  ⢸⣿⣿  ⠸⣿⣿⣦⣤⡄
+   ⠈⠉⠉⠁ ⠉⠉⠁  ⣄⡈⠉⠉⣀⣾⣿⡟     ⠉⠉⠉⠉⠁   ⠉⠉⠁  ⠈⠉⠉   ⠈⠉⠉⠉⠁
+             ⠛⠿⠿⠿⠿⠛⠋
 
-  AGENT MANAGER SETUP   · your code · your agents · one bodega
+  ⣿⣿⣿⡴⠾⣿⣷⣆⣴⠾⢿⣿⣦⡀  ⣿⠿⠿⠿⢿⣷⣦   ⢸⣿⣿⣴⠾⢿⣿⣦⡀  ⣿⠿⠿⠿⢿⣷⣦  ⢀⣴⣾⣿⠿⢦⣼⣿⣿   ⣤⣶⣿⠿⢿⣷⣦   ⣿⣿⣧⣶⣿⣿
+  ⣿⣿⣿  ⢸⣿⣿⠃ ⠈⣿⣿⡇ ⢀⣤⣶⣶⣶⣶⣿⣿⡇  ⢸⣿⣿⠁ ⠈⣿⣿⡇ ⢀⣤⣶⣶⣶⣶⣿⣿⡇ ⣼⣿⣿⠁  ⢻⣿⣿  ⣼⣿⣿⣁⣀⣀⣿⣿⣧  ⣿⣿⡟⠁ ⠈
+  ⣿⣿⣿  ⢸⣿⣿   ⣿⣿⡇ ⣾⣿⣿⠁ ⢠⣿⣿⡇  ⢸⣿⣿   ⣿⣿⡇ ⣾⣿⣿⠁ ⢠⣿⣿⡇ ⢻⣿⣿⡀  ⣼⣿⣿  ⢻⣿⣿⠛⠛⠛⠛⠛⡛  ⣿⣿⡇
+  ⣿⣿⣿  ⢸⣿⣿   ⣿⣿⡇ ⠘⢿⣿⣷⡶⠛⣿⣿⡇  ⢸⣿⣿   ⣿⣿⡇ ⠘⢿⣿⣷⡶⠛⣿⣿⡇ ⠈⠻⢿⣷⣶⠞⢻⣿⣿   ⠛⠿⣿⣶⣶⣶⡿⠇  ⣿⣿⡇
+                                                 ⣦⣄⣀⣀⣤⣿⣿⠏
+                                                 ⠉⠛⠛⠛⠛⠉⠁
+
+  AGENT MANAGER SETUP   · your code · your agents
 ```
 
 ## Which path is yours?

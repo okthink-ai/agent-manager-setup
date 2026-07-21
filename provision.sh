@@ -248,22 +248,29 @@ install_pkgs() {  # install_pkgs <mgr> <pkg...>
     esac
 }
 
-# Cute bodega-style splash — an ASCII rendering of the "bodega" wordmark. Pure
+# Retro splash — a braille rendering of the "agent manager" wordmark. Pure
 # decoration; never let it abort the run. The art prints via a quoted heredoc
 # so its $ # % * characters are all literal (no escaping needed).
 banner() {
     printf "\n${RED}"
-    cat <<'BODEGA_ART'
-   ⢀⣠⡴⠶⢾⣿⣿⣿⣿                    ⠈⢹⣿⣿⣿⡇              ⢠⣴⣶⡄
-  ⢰⣿⣃⣀  ⣿⣿⣿⣟⣠⣤⣤⣄⡀   ⣠⣤⠴⣤⣤⣀   ⣀⣤⣴⠦⣼⣿⣿⣿⡇ ⢀⣠⡴⢶⣤⣄  ⢀⣠⣤⠶⢦⣿⣝⠛⠃⢀⣤⡤⠶⣶⣤
-  ⢿⣿⣿⣿⡷ ⣿⣿⣿⣿⠉⠹⣿⣿⣿⡄⢠⣾⣿⡇ ⠸⣿⣿⣧ ⣼⣿⣿⡇ ⢸⣿⣿⣿⡇⣰⣿⣿  ⣿⣿⣷⢠⣿⣿⣿ ⠈⣿⣿⣷⡀⣿⣿⣷ ⣿⣿
-  ⠈⠙⠛⠛⠁ ⣿⣿⣿⣿  ⣿⣿⣿⡇⣿⣿⣿⡇  ⣿⣿⣿⣷⣿⣿⣿⡆ ⢸⣿⣿⣿⡇⣿⣿⣿⡴⠞⠛⠋⠉⠸⣿⣿⣿  ⣿⣿⣿⠃⢈⣩⣥⡶⣿⣿
-        ⣿⣿⣿⣿  ⣿⣿⣿⠇⢻⣿⣿⣧  ⣿⣿⣿⠉⣿⣿⣿⣇ ⢸⣿⣿⣿⡇⢿⣿⣿⣷⣄⣀⣀⣠⡄⣉⡿⠿⠦⠴⠿⠛⠁⢰⣿⣿⣿ ⣿⣿
-        ⠛⠛⠛⠋⢀⣴⣿⠿⠋  ⠙⠿⣿⣄⣠⡿⠟⠁ ⠘⠿⣿⣿⡷⢿⣿⣿⡿⠧⠈⠻⢿⣿⣿⣿⠿⠋⢰⣿⣷⣶⣶⣾⣿⣿⣶⣜⢿⣿⣿⡿⢻⣿
-                                     ⣠⣴⣶⣶⠶⠶⠶⣤⣄⣈⠛⠿⠿⠿⠿⠿⠿⣿⣿    ⠈⢿
-BODEGA_ART
+    cat <<'WORDMARK_ART'
+                                            ⢸⣿⣿
+   ⣶⣶⣶⣶⣶⣦⣄   ⣠⣴⣶⣶⣄⣰⣶⣶   ⣀⣤⣶⣶⣶⣦⣄   ⣶⣶⣆⣤⣶⣶⣦⡀ ⣶⣾⣿⣿⣶⣶⣶
+   ⣉⣤⣤⣤⣬⣿⣿⡆ ⣸⣿⣿⠋ ⠈⢿⣿⣿  ⣰⣿⣿⠋ ⠈⣿⣿⣆  ⣿⣿⡟⠁ ⢻⣿⣿  ⢸⣿⣿
+  ⣼⣿⣿⠋⠉⢉⣿⣿⡇ ⢿⣿⣿   ⣸⣿⣿  ⢿⣿⣿⠿⠿⠿⠿⠿⠿  ⣿⣿⡇  ⢸⣿⣿  ⢸⣿⣿
+  ⠹⣿⣿⣦⣤⠾⣿⣿⡇ ⠘⢿⣿⣧⣤⡴⢿⣿⣿  ⠈⠿⣿⣶⣤⣤⣤⣶⡇  ⣿⣿⡇  ⢸⣿⣿  ⠸⣿⣿⣦⣤⡄
+   ⠈⠉⠉⠁ ⠉⠉⠁  ⣄⡈⠉⠉⣀⣾⣿⡟     ⠉⠉⠉⠉⠁   ⠉⠉⠁  ⠈⠉⠉   ⠈⠉⠉⠉⠁
+             ⠛⠿⠿⠿⠿⠛⠋
+
+  ⣿⣿⣿⡴⠾⣿⣷⣆⣴⠾⢿⣿⣦⡀  ⣿⠿⠿⠿⢿⣷⣦   ⢸⣿⣿⣴⠾⢿⣿⣦⡀  ⣿⠿⠿⠿⢿⣷⣦  ⢀⣴⣾⣿⠿⢦⣼⣿⣿   ⣤⣶⣿⠿⢿⣷⣦   ⣿⣿⣧⣶⣿⣿
+  ⣿⣿⣿  ⢸⣿⣿⠃ ⠈⣿⣿⡇ ⢀⣤⣶⣶⣶⣶⣿⣿⡇  ⢸⣿⣿⠁ ⠈⣿⣿⡇ ⢀⣤⣶⣶⣶⣶⣿⣿⡇ ⣼⣿⣿⠁  ⢻⣿⣿  ⣼⣿⣿⣁⣀⣀⣿⣿⣧  ⣿⣿⡟⠁ ⠈
+  ⣿⣿⣿  ⢸⣿⣿   ⣿⣿⡇ ⣾⣿⣿⠁ ⢠⣿⣿⡇  ⢸⣿⣿   ⣿⣿⡇ ⣾⣿⣿⠁ ⢠⣿⣿⡇ ⢻⣿⣿⡀  ⣼⣿⣿  ⢻⣿⣿⠛⠛⠛⠛⠛⡛  ⣿⣿⡇
+  ⣿⣿⣿  ⢸⣿⣿   ⣿⣿⡇ ⠘⢿⣿⣷⡶⠛⣿⣿⡇  ⢸⣿⣿   ⣿⣿⡇ ⠘⢿⣿⣷⡶⠛⣿⣿⡇ ⠈⠻⢿⣷⣶⠞⢻⣿⣿   ⠛⠿⣿⣶⣶⣶⡿⠇  ⣿⣿⡇
+                                                 ⣦⣄⣀⣀⣤⣿⣿⠏
+                                                 ⠉⠛⠛⠛⠛⠉⠁
+WORDMARK_ART
     printf "${NC}\n"
-    printf "  ${BOLD}AGENT MANAGER SETUP${NC}   ${DIM}· your code · your agents · one bodega${NC}\n\n"
+    printf "  ${BOLD}AGENT MANAGER SETUP${NC}   ${DIM}· your code · your agents${NC}\n\n"
 }
 banner
 
