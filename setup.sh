@@ -18,6 +18,10 @@
 #
 # Optional env vars for unattended runs:
 #   TS_AUTHKEY  — Tailscale auth key (skips the browser login)
+#   TS_TAGS     — Tailscale tags for this node (e.g. tag:demo). The tag must be
+#                 declared under tagOwners in your tailnet ACL first, or
+#                 tailscale up refuses it. Used for demo boxes so guest access
+#                 can be scoped by ACL to the dashboard port only.
 #   GH_TOKEN    — GitHub PAT with repo + read:packages (skips the browser login)
 #
 # Designed to be idempotent — safe to re-run after a failure.
@@ -79,7 +83,13 @@ REPO_URL="https://github.com/okthink-ai/claude-manager.git"
 #   GH_TOKEN       — a GitHub PAT with repo + read:packages scopes
 # When unset, the script falls back to the interactive login for that service.
 TS_AUTHKEY="${TS_AUTHKEY:-${TAILSCALE_AUTHKEY:-}}"
+TS_TAGS="${TS_TAGS:-}"
 GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+
+# Extra args for tailscale up. --advertise-tags requires the tag to be declared
+# in the tailnet ACL's tagOwners — see the README's Demo Box section.
+TS_UP_ARGS=()
+[[ -n "$TS_TAGS" ]] && TS_UP_ARGS+=("--advertise-tags=$TS_TAGS")
 
 echo ""
 info "Will create user '$NEW_USER' and install everything under /home/$NEW_USER"
@@ -265,7 +275,7 @@ else
         TS_KEY_FILE=$(mktemp)
         chmod 600 "$TS_KEY_FILE"
         printf '%s' "$TS_AUTHKEY" > "$TS_KEY_FILE"
-        if tailscale up --auth-key="file:$TS_KEY_FILE"; then
+        if tailscale up --auth-key="file:$TS_KEY_FILE" ${TS_UP_ARGS[@]+"${TS_UP_ARGS[@]}"}; then
             rm -f "$TS_KEY_FILE"
         else
             rm -f "$TS_KEY_FILE"
@@ -275,7 +285,7 @@ else
     else
         info "Starting Tailscale — follow the auth URL below:"
         echo ""
-        tailscale up
+        tailscale up ${TS_UP_ARGS[@]+"${TS_UP_ARGS[@]}"}
         echo ""
     fi
 
