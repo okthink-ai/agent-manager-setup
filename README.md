@@ -1,6 +1,6 @@
 # Agent Manager Setup
 
-Setup scripts for installing [Agent Manager](https://github.com/okthink-ai/claude-manager) — on a fresh Hetzner VPS, an Ubuntu server you already own, or your Mac.
+Setup scripts for installing [Agent Manager](https://github.com/okthink-ai/agent-manager) — on a fresh Hetzner VPS, an Ubuntu server you already own, or your Mac.
 
 `provision.sh` greets you with a bodega-style splash — a braille rendering of the project wordmark (shown here without its terminal color):
 
@@ -25,6 +25,7 @@ Setup scripts for installing [Agent Manager](https://github.com/okthink-ai/claud
 | **Your Mac** | `mac-install.sh` | On the Mac |
 | A **cheap demo box** guests can play with over Tailscale | `provision.sh --demo` → `setup.sh` | On your laptop, then on the demo box — see [Demo Box](#demo-box--a-cheap-instance-guests-can-play-with) |
 | A box that **already has Agent Manager** and needs updating | `migrate-to-expo.sh` | On the box — see [Updating an Existing Install](#updating-an-existing-install) |
+| A box still on the **old Claude Manager identity** (`claude-manager` dir, old repo URL) | `migrate-to-agent-manager.sh` | On the box — see [Updating an Existing Install](#updating-an-existing-install) |
 
 All scripts are idempotent — if one fails partway, re-run it and it picks up where it left off.
 
@@ -248,7 +249,16 @@ Prices and exact type availability change over time — the script always reads 
 
 ## Updating an Existing Install
 
-Agent Manager's frontend moved from Vite (`web/`) to Expo (`apps/expo`). Boxes installed before the switch can't just `git pull` — the frontend config, dependency layout, and build command all changed. Run the migration script on the box instead (works on the VPS, an existing Ubuntu server, and Mac installs; it probes `~/dev/claude-manager` and `~/claude-manager`, or takes `--dir`):
+**Still on the old Claude Manager identity?** The project was renamed — the repo moved to `okthink-ai/agent-manager` and the UI now says Agent Manager. Boxes installed before the rename carry the old directory name and remote URL. Run the rename migration first — it repoints the git remote, renames the install directory (`claude-manager` → `agent-manager`; your data moves with it), then updates and rebuilds:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/okthink-ai/agent-manager-setup/main/migrate-to-agent-manager.sh
+bash migrate-to-agent-manager.sh
+```
+
+It runs every guard before touching anything (clean checkout on `main`, no conflicting directories), stops the server, and prints a two-layer rollback recipe (undo the rename, or undo the update). Idempotent — on an already-renamed box it acts as a plain update.
+
+**Already renamed, or installed after the switch?** Agent Manager's frontend moved from Vite (`web/`) to Expo (`apps/expo`). Boxes installed before that switch can't just `git pull` — the frontend config, dependency layout, and build command all changed. Run the migration script on the box instead (works on the VPS, an existing Ubuntu server, and Mac installs; it probes `~/dev/agent-manager` and `~/agent-manager`, then the pre-rename paths, or takes `--dir`):
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/okthink-ai/agent-manager-setup/main/migrate-to-expo.sh
