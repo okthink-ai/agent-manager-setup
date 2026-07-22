@@ -49,7 +49,7 @@ section() {
     echo ""
 }
 
-REPO_URL="https://github.com/okthink-ai/claude-manager.git"
+REPO_URL="https://github.com/okthink-ai/agent-manager.git"
 PORT="${PORT:-4801}"
 GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 
@@ -148,7 +148,7 @@ else
     ok "Git configured: $GIT_NAME <$GIT_EMAIL>"
 fi
 
-DEFAULT_DIR="$HOME/claude-manager"
+DEFAULT_DIR="$HOME/agent-manager"
 read -rp "Install directory for Agent Manager [$DEFAULT_DIR]: " INSTALL_DIR
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_DIR}"
 # Expand a leading ~ to $HOME (the shell won't, since it's inside a variable).
