@@ -48,7 +48,7 @@ section() {
     echo ""
 }
 
-REPO_URL="https://github.com/okthink-ai/claude-manager.git"
+REPO_URL="https://github.com/okthink-ai/agent-manager.git"
 PORT="${PORT:-4801}"
 GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 
@@ -122,7 +122,7 @@ fi
 read -rp "Git name (for commits, e.g. 'Jane Smith'): " GIT_NAME
 read -rp "Git email (for commits): " GIT_EMAIL
 
-DEFAULT_DIR="$HOME/dev/claude-manager"
+DEFAULT_DIR="$HOME/dev/agent-manager"
 read -rp "Install directory for Agent Manager [$DEFAULT_DIR]: " INSTALL_DIR
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_DIR}"
 # Expand a leading ~ to $HOME (the shell won't, since it's inside a variable).

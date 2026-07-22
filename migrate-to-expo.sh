@@ -17,7 +17,8 @@
 #   7. Verifies the server responds; with --clean, removes old Vite artifacts
 #
 # Flags:
-#   --dir <path>   Install location (default: probes ~/dev/claude-manager, then
+#   --dir <path>   Install location (default: probes ~/dev/agent-manager and
+#                  ~/agent-manager, then the pre-rename ~/dev/claude-manager and
 #                  ~/claude-manager; the INSTALL_DIR env var also works)
 #   --port <port>  Server port (default 4801; PORT env var also works)
 #   -y, --yes      Unattended: auto-accept prompts (never implies --clean)
@@ -60,8 +61,9 @@ Upgrade an existing Agent Manager install from the Vite frontend to Expo.
 Also works as a plain updater on already-migrated installs.
 
 Options:
-  --dir <path>   Install location (default: probes ~/dev/claude-manager, then
-                 ~/claude-manager; the INSTALL_DIR env var also works)
+  --dir <path>   Install location (default: probes ~/dev/agent-manager and
+                 ~/agent-manager, then the pre-rename claude-manager paths;
+                 the INSTALL_DIR env var also works)
   --port <port>  Server port (default 4801)
   -y, --yes      Unattended: auto-accept prompts (never implies --clean)
   --clean        After a verified migration, delete leftover web/ artifacts
@@ -296,11 +298,14 @@ for cmd in git tmux curl; do
     fi
 done
 
-# Resolve the install directory: --dir / INSTALL_DIR env, else probe the two
-# installer defaults (setup.sh and ubuntu-install.sh use ~/dev/claude-manager;
-# mac-install.sh uses ~/claude-manager).
+# Resolve the install directory: --dir / INSTALL_DIR env, else probe the
+# installer defaults — current names first (setup.sh/ubuntu-install.sh use
+# ~/dev/agent-manager, mac-install.sh uses ~/agent-manager), then the
+# pre-rename paths, since this script must keep serving un-renamed boxes
+# (migrate-to-agent-manager.sh is the path off the old name).
 if [[ -z "$INSTALL_DIR" ]]; then
-    for candidate in "$HOME/dev/claude-manager" "$HOME/claude-manager"; do
+    for candidate in "$HOME/dev/agent-manager" "$HOME/agent-manager" \
+                     "$HOME/dev/claude-manager" "$HOME/claude-manager"; do
         if [[ -d "$candidate/.git" ]]; then
             INSTALL_DIR="$candidate"
             break
@@ -311,12 +316,13 @@ INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 
 if [[ -z "$INSTALL_DIR" ]]; then
     err "Could not find the Agent Manager checkout."
-    err "Looked in ~/dev/claude-manager and ~/claude-manager."
-    err "Point me at it:  bash migrate-to-expo.sh --dir /path/to/claude-manager"
+    err "Looked in ~/dev/agent-manager, ~/agent-manager, and the pre-rename"
+    err "claude-manager equivalents."
+    err "Point me at it:  bash migrate-to-expo.sh --dir /path/to/agent-manager"
     exit 1
 elif [[ ! -d "$INSTALL_DIR/.git" ]]; then
     err "No git checkout at $INSTALL_DIR (missing .git)."
-    err "Point --dir at the root of the claude-manager checkout."
+    err "Point --dir at the root of the agent-manager checkout."
     exit 1
 fi
 
@@ -328,8 +334,8 @@ if [[ $EUID -eq 0 && ! -O "$INSTALL_DIR" ]]; then
 fi
 
 REMOTE_URL=$(git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || true)
-if [[ "$REMOTE_URL" != *claude-manager* ]]; then
-    err "$INSTALL_DIR doesn't look like a claude-manager checkout (origin: ${REMOTE_URL:-none})."
+if [[ "$REMOTE_URL" != *claude-manager* && "$REMOTE_URL" != *agent-manager* ]]; then
+    err "$INSTALL_DIR doesn't look like an agent-manager checkout (origin: ${REMOTE_URL:-none})."
     exit 1
 fi
 ok "Found install: $INSTALL_DIR"

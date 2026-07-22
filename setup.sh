@@ -84,7 +84,7 @@ read -rp "Git email (for commits): " GIT_EMAIL
 # written to .env in step 8. The UI's Settings panel (stored in the DB) takes
 # priority over the seeded value, so don't re-ask if a previous run seeded it.
 CODE_DIRS_INPUT=""
-if ! grep -q '^CODE_DIRS=' "/home/$NEW_USER/dev/claude-manager/.env" 2>/dev/null; then
+if ! grep -q '^CODE_DIRS=' "/home/$NEW_USER/dev/agent-manager/.env" 2>/dev/null; then
     DEFAULT_CODE_DIRS="/home/$NEW_USER/dev"
     read -rp "Projects directory to show in Agent Manager (first-run default) [$DEFAULT_CODE_DIRS]: " CODE_DIRS_INPUT
     CODE_DIRS_INPUT="${CODE_DIRS_INPUT:-$DEFAULT_CODE_DIRS}"
@@ -92,7 +92,7 @@ if ! grep -q '^CODE_DIRS=' "/home/$NEW_USER/dev/claude-manager/.env" 2>/dev/null
     CODE_DIRS_INPUT="${CODE_DIRS_INPUT/#\~//home/$NEW_USER}"
 fi
 
-REPO_URL="https://github.com/okthink-ai/claude-manager.git"
+REPO_URL="https://github.com/okthink-ai/agent-manager.git"
 
 # Optional non-interactive auth. Export these before running to skip the
 # browser/device flows (e.g. for unattended setup):
@@ -511,7 +511,7 @@ fi
 
 section "8/8  Clone & Install Agent Manager"
 
-INSTALL_DIR="/home/$NEW_USER/dev/claude-manager"
+INSTALL_DIR="/home/$NEW_USER/dev/agent-manager"
 
 if [[ -d "$INSTALL_DIR" ]]; then
     ok "Agent Manager already cloned at $INSTALL_DIR"
@@ -569,7 +569,7 @@ npm_install_with_retry() {
 }
 
 # One root install covers the frontend too (npm workspaces: apps/*).
-npm_install_with_retry "~/dev/claude-manager" "root"
+npm_install_with_retry "~/dev/agent-manager" "root"
 
 # Copy .env.example if it exists
 if [[ -f "$INSTALL_DIR/.env.example" ]] && [[ ! -f "$INSTALL_DIR/.env" ]]; then
@@ -616,7 +616,7 @@ if [[ -f "$EXPO_ENV" ]]; then
     ok "apps/expo/.env already exists"
 else
     info "Writing Firebase config to apps/expo/.env..."
-    run_as_user 'cat > ~/dev/claude-manager/apps/expo/.env <<ENVEOF
+    run_as_user 'cat > ~/dev/agent-manager/apps/expo/.env <<ENVEOF
 EXPO_PUBLIC_FIREBASE_API_KEY=AIzaSyCGCFvt5iN93rQkH6R5zStANc2ZGj_YL8E
 EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=claude-manager-chat.firebaseapp.com
 EXPO_PUBLIC_FIREBASE_PROJECT_ID=claude-manager-chat
@@ -630,7 +630,7 @@ fi
 # Build the Expo web export for prod mode (served by the single server over
 # plain HTTP — no cert warnings over Tailscale).
 info "Building frontend for production (expo export — takes a few minutes)..."
-run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && cd ~/dev/claude-manager && npm run build'
+run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && cd ~/dev/agent-manager && npm run build'
 ok "Frontend built"
 
 # Set server mode to prod so future restarts preserve the mode
@@ -644,7 +644,7 @@ echo ""
 read -rp "Start the server now in a tmux session? (y/n): " START_NOW
 if [[ "$START_NOW" =~ ^[Yy] ]]; then
     info "Starting server in tmux session 'am-server'..."
-    run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && tmux new-session -d -s am-server -c ~/dev/claude-manager && tmux send-keys -t am-server "PORT=4801 npx tsx server/index.ts" Enter'
+    run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && tmux new-session -d -s am-server -c ~/dev/agent-manager && tmux send-keys -t am-server "PORT=4801 npx tsx server/index.ts" Enter'
     sleep 3
     if run_as_user 'lsof -i :4801 -sTCP:LISTEN' &>/dev/null; then
         ok "Server is running on port 4801"
@@ -684,12 +684,12 @@ else
     printf "  ${STEP}. SSH in as %s and start the server:\n" "$NEW_USER"
     echo ""
     printf "     ${CYAN}ssh %s${NC}\n" "$SSH_ALIAS"
-    printf "     ${CYAN}cd ~/dev/claude-manager${NC}\n"
+    printf "     ${CYAN}cd ~/dev/agent-manager${NC}\n"
     printf "     ${CYAN}PORT=4801 npx tsx server/index.ts${NC}\n"
     echo ""
     echo "     Or in a tmux session so it persists after disconnect:"
     echo ""
-    printf "     ${CYAN}tmux new-session -d -s am-server -c ~/dev/claude-manager${NC}\n"
+    printf "     ${CYAN}tmux new-session -d -s am-server -c ~/dev/agent-manager${NC}\n"
     printf "     ${CYAN}tmux send-keys -t am-server 'PORT=4801 npx tsx server/index.ts' Enter${NC}\n"
     STEP=$((STEP + 1))
     echo ""
