@@ -43,6 +43,12 @@ ASSUME_YES=false
 SKIP_UPDATE=false
 INSTALL_DIR="${INSTALL_DIR:-}"
 
+# Resolve this script's own directory NOW, before any `cd`, so we can find the
+# adjacent migrate-to-expo.sh later (by then the CWD has moved to the install's
+# parent). Computed with a relative BASH_SOURCE after a cd would resolve against
+# the wrong directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -344,7 +350,13 @@ fi
 if [[ "$SKIP_UPDATE" == true ]]; then
     section "Relaunch (update skipped)"
 
-    if [[ "$WAS_RUNNING" == true ]]; then
+    # A relaunch only makes sense when THIS run stopped the server — i.e. it
+    # renamed. Without a rename nothing was stopped and the server (if any) is
+    # still serving on the unchanged path, so don't describe a state we never
+    # observed.
+    if [[ "$NEEDS_RENAME" != true ]]; then
+        info "No rename was needed — nothing to relaunch."
+    elif [[ "$WAS_RUNNING" == true ]]; then
         # Mirror the updater's relaunch: kill any half-dead session, start
         # fresh from the NEW path so the server's cwd (and its cwd-relative
         # data/) follow the rename.
@@ -379,7 +391,8 @@ else
     # migrate-to-expo.sh is the established updater: clean-tree guard,
     # ff-only pull (now riding the new remote URL), npm ci, expo export,
     # restart from its --dir, /api/status verify, content-rollback recipe.
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # SCRIPT_DIR was resolved at the top, before any cd, so the adjacent copy
+    # is found on repo-clone runs; the bare curl one-liner falls back to fetch.
     COMPANION="$SCRIPT_DIR/migrate-to-expo.sh"
     if [[ ! -f "$COMPANION" ]]; then
         info "Fetching migrate-to-expo.sh (not adjacent on disk)..."
