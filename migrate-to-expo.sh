@@ -476,6 +476,7 @@ section "4/8  Write apps/expo/.env"
 # Expo inlines EXPO_PUBLIC_* env at export time (the CLI auto-loads this file).
 # No EXPO_PUBLIC_API_URL / EXPO_PUBLIC_WS_URL here: the root build script pins
 # them to same-origin '/' and '/ws', and shell env beats .env in Expo's loader.
+# (The server-side copies live in the root .env — written in step 7.)
 EXPO_ENV="$INSTALL_DIR/apps/expo/.env"
 if [[ -f "$EXPO_ENV" ]]; then
     ok "apps/expo/.env already exists — leaving it untouched"
@@ -521,6 +522,11 @@ section "7/8  Restart the Server"
 # provisioned VPSes this is safe: the Hetzner firewall admits only SSH and ICMP
 # inbound, and Tailscale traffic arrives via its own interface regardless.
 touch "$INSTALL_DIR/.env"
+# A hand-edited .env may lack a trailing newline; appends below would glue
+# onto its last line (GNU sed preserves the missing newline). Normalize once.
+if [[ -s "$INSTALL_DIR/.env" && -n "$(tail -c1 "$INSTALL_DIR/.env")" ]]; then
+    echo >> "$INSTALL_DIR/.env"
+fi
 if grep -q '^CM_TERMINAL_ALLOW_LAN=1' "$INSTALL_DIR/.env"; then
     ok "CM_TERMINAL_ALLOW_LAN=1 already set in .env"
 elif binds_nonloopback "$PORT"; then
@@ -583,6 +589,34 @@ else
     fi
 fi
 
+# The server's restart preflight (current claude-manager main) requires
+# EXPO_PUBLIC_API_URL and EXPO_PUBLIC_WS_URL as absolute URLs in the server
+# env — without them every UI-triggered restart fails. The browser never sees
+# these values: the production build pins same-origin '/' and '/ws' via shell
+# env, which beats .env in Expo's loader — so localhost is correct even on
+# remotely-accessed boxes.
+# HTTPS iff the repo has TLS certs, the same rule the server itself uses
+# (PROTO is reused by the verify step below).
+PROTO=http; WS_PROTO=ws
+if [[ -f "$INSTALL_DIR/.certs/key.pem" && -f "$INSTALL_DIR/.certs/cert.pem" ]]; then
+    PROTO=https; WS_PROTO=wss
+fi
+# Keep existing values only when they're usable: the preflight rejects empty
+# or relative values (a hand-added '/' copied from the build script is the
+# common failure), so presence alone isn't enough — require a scheme.
+if grep -Eq '^EXPO_PUBLIC_API_URL=https?://' "$INSTALL_DIR/.env" \
+   && grep -Eq '^EXPO_PUBLIC_WS_URL=wss?://' "$INSTALL_DIR/.env"; then
+    ok "EXPO_PUBLIC_API_URL / EXPO_PUBLIC_WS_URL already set in .env — keeping them"
+else
+    sed -i.bak '/^EXPO_PUBLIC_API_URL=/d;/^EXPO_PUBLIC_WS_URL=/d' "$INSTALL_DIR/.env"
+    rm -f "$INSTALL_DIR/.env.bak"
+    {
+        echo "EXPO_PUBLIC_API_URL=$PROTO://localhost:$PORT"
+        echo "EXPO_PUBLIC_WS_URL=$WS_PROTO://localhost:$PORT/ws"
+    } >> "$INSTALL_DIR/.env"
+    ok "Set EXPO_PUBLIC_API_URL / EXPO_PUBLIC_WS_URL in .env (restart preflight needs them)"
+fi
+
 # ── Stop the old server ──
 if tmux has-session -t am-server 2>/dev/null; then
     info "Interrupting the server in tmux session 'am-server'..."
@@ -622,11 +656,8 @@ fi
 
 section "8/8  Verify"
 
-# HTTPS iff the repo has TLS certs, same rule the server itself uses.
+# PROTO (http/https) was resolved in step 7 from the repo's TLS certs.
 # -k tolerates self-signed certs.
-PROTO=http
-[[ -f "$INSTALL_DIR/.certs/key.pem" && -f "$INSTALL_DIR/.certs/cert.pem" ]] && PROTO=https
-
 STATUS_CODE=$(curl -sk -o /dev/null -w '%{http_code}' "$PROTO://localhost:$PORT/api/status" || echo 000)
 if [[ "$STATUS_CODE" == 200 ]]; then
     ok "API responds: $PROTO://localhost:$PORT/api/status"

@@ -448,6 +448,11 @@ fi
 # here (rather than only inline at launch) so UI-triggered restarts — which
 # don't pass the env var themselves — keep the same binding. BSD sed needs -i ''.
 touch "$INSTALL_DIR/.env"
+# A hand-edited .env may lack a trailing newline; appends below would glue
+# onto its last line. Normalize once.
+if [[ -s "$INSTALL_DIR/.env" && -n "$(tail -c1 "$INSTALL_DIR/.env")" ]]; then
+    echo >> "$INSTALL_DIR/.env"
+fi
 if [[ "$ACCESS_MODE" == "tailscale" ]]; then
     # Ensure exactly one CM_TERMINAL_ALLOW_LAN=1 line.
     sed -i '' '/^CM_TERMINAL_ALLOW_LAN=/d' "$INSTALL_DIR/.env"
@@ -461,6 +466,23 @@ else
     else
         ok "Localhost only — server binds loopback (127.0.0.1)"
     fi
+fi
+
+# The server's restart preflight requires EXPO_PUBLIC_API_URL and
+# EXPO_PUBLIC_WS_URL as absolute URLs in the server env — without them every
+# UI-triggered restart fails. The browser never sees these: the production
+# build pins same-origin '/' and '/ws' via shell env, which beats .env in
+# Expo's loader — so localhost is correct even for Tailscale access.
+# Keep existing values only when they're usable: the preflight rejects empty
+# or relative values, so presence alone isn't enough — require a scheme.
+if grep -Eq '^EXPO_PUBLIC_API_URL=https?://' "$INSTALL_DIR/.env" \
+   && grep -Eq '^EXPO_PUBLIC_WS_URL=wss?://' "$INSTALL_DIR/.env"; then
+    ok "EXPO_PUBLIC_API_URL / EXPO_PUBLIC_WS_URL already set in .env — keeping them"
+else
+    sed -i '' '/^EXPO_PUBLIC_API_URL=/d;/^EXPO_PUBLIC_WS_URL=/d' "$INSTALL_DIR/.env"
+    echo "EXPO_PUBLIC_API_URL=http://localhost:$PORT" >> "$INSTALL_DIR/.env"
+    echo "EXPO_PUBLIC_WS_URL=ws://localhost:$PORT/ws" >> "$INSTALL_DIR/.env"
+    ok "Set EXPO_PUBLIC_API_URL / EXPO_PUBLIC_WS_URL in .env (restart preflight needs them)"
 fi
 
 # Seed the projects directory so the dashboard isn't empty on first load. The

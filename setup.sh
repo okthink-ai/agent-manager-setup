@@ -583,12 +583,34 @@ fi
 # loads it via dotenv) so UI-triggered restarts keep the binding too.
 touch "$INSTALL_DIR/.env"
 chown "$NEW_USER:$NEW_USER" "$INSTALL_DIR/.env"
+# A hand-edited .env may lack a trailing newline; appends below would glue
+# onto its last line (GNU sed preserves the missing newline). Normalize once.
+if [[ -s "$INSTALL_DIR/.env" && -n "$(tail -c1 "$INSTALL_DIR/.env")" ]]; then
+    echo >> "$INSTALL_DIR/.env"
+fi
 if grep -q '^CM_TERMINAL_ALLOW_LAN=1' "$INSTALL_DIR/.env" 2>/dev/null; then
     ok "CM_TERMINAL_ALLOW_LAN already set in .env"
 else
     sed -i '/^CM_TERMINAL_ALLOW_LAN=/d' "$INSTALL_DIR/.env"
     echo 'CM_TERMINAL_ALLOW_LAN=1' >> "$INSTALL_DIR/.env"
     ok "Set CM_TERMINAL_ALLOW_LAN=1 in .env (server binds 0.0.0.0 for Tailscale access)"
+fi
+
+# The server's restart preflight requires EXPO_PUBLIC_API_URL and
+# EXPO_PUBLIC_WS_URL as absolute URLs in the server env — without them every
+# UI-triggered restart fails. The browser never sees these: the production
+# build pins same-origin '/' and '/ws' via shell env, which beats .env in
+# Expo's loader — so localhost is correct even for Tailscale access.
+# Keep existing values only when they're usable: the preflight rejects empty
+# or relative values, so presence alone isn't enough — require a scheme.
+if grep -Eq '^EXPO_PUBLIC_API_URL=https?://' "$INSTALL_DIR/.env" \
+   && grep -Eq '^EXPO_PUBLIC_WS_URL=wss?://' "$INSTALL_DIR/.env"; then
+    ok "EXPO_PUBLIC_API_URL / EXPO_PUBLIC_WS_URL already set in .env — keeping them"
+else
+    sed -i '/^EXPO_PUBLIC_API_URL=/d;/^EXPO_PUBLIC_WS_URL=/d' "$INSTALL_DIR/.env"
+    echo 'EXPO_PUBLIC_API_URL=http://localhost:4801' >> "$INSTALL_DIR/.env"
+    echo 'EXPO_PUBLIC_WS_URL=ws://localhost:4801/ws' >> "$INSTALL_DIR/.env"
+    ok "Set EXPO_PUBLIC_API_URL / EXPO_PUBLIC_WS_URL in .env (restart preflight needs them)"
 fi
 
 # Seed the projects directory (asked upfront) so the dashboard isn't empty on
