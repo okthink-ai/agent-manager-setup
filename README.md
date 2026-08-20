@@ -23,6 +23,7 @@ Setup scripts for installing [Agent Manager](https://github.com/okthink-ai/claud
 | A **new Hetzner VPS** (we create it for you) | `provision.sh` → `setup.sh` | On your laptop, then on the new server |
 | An **Ubuntu server you already own** | `ubuntu-install.sh` | On the server |
 | **Your Mac** | `mac-install.sh` | On the Mac |
+| **Your Mac**, reached from the hosted app at `agents.okthink.ai` | `mac-install.sh --hosted` | On the Mac — see [Hosted Web App](#hosted-web-app) |
 | A **cheap demo box** guests can play with over Tailscale | `provision.sh --demo` → `setup.sh` | On your laptop, then on the demo box — see [Demo Box](#demo-box--a-cheap-instance-guests-can-play-with) |
 | A box that **already has Agent Manager** and needs updating | `migrate-to-expo.sh` | On the box — see [Updating an Existing Install](#updating-an-existing-install) |
 
@@ -153,7 +154,65 @@ This will:
 
 2. **tailscale** — for a Mac that serves other devices (say, a Mac mini in a closet). The script installs Tailscale via Homebrew if needed, walks you through signing in to the menu-bar app, and binds the server so any device on your tailnet can open `http://<the-mac's-tailscale-ip>:4801`. Note this binds all interfaces, so the dashboard is also reachable from the Mac's local network (e.g. home Wi-Fi) — fine on a trusted network.
 
+3. **hosted** — the same server, reached through the hosted web app at `https://agents.okthink.ai` instead of a bare IP. See [Hosted Web App](#hosted-web-app) below.
+
 It won't clobber an existing checkout, `.env` files, or your Claude Code settings, and the same `GH_TOKEN` / `PORT` env vars apply.
+
+## Hosted Web App
+
+`https://agents.okthink.ai` is the Agent Manager frontend, hosted. It is a static
+bundle with no backend of its own: you point it at the machine running your
+server, and every API call and WebSocket goes straight there. The hosted side
+serves the page and nothing else — none of your traffic passes through it, and
+your sessions, files, and settings never leave your own machine.
+
+The upside over plain Tailscale mode is that you get a real URL and an always
+up-to-date frontend — useful from a phone, or from a browser you'd rather not
+type an IP into. To set it up on a Mac:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/okthink-ai/agent-manager-setup/main/mac-install.sh
+bash mac-install.sh --hosted
+```
+
+That runs the normal Mac install, and then does the three things the hosted app
+requires:
+
+1. **Installs Tailscale and signs you in** — the hosted page and your Mac reach
+   each other over your tailnet. Nothing is exposed to the public internet.
+2. **Issues a Tailscale HTTPS certificate for this Mac.** The hosted page is
+   served over HTTPS, so the browser blocks it from calling a plain `http://`
+   server. Tailscale issues a real certificate for the machine's MagicDNS name
+   (`<machine>.<tailnet>.ts.net`), which is why the app asks for that name and
+   rejects an IP or a short hostname — neither matches the certificate.
+3. **Trusts the hosted origin** (`CM_ALLOW_HOSTED_WEB_ORIGIN=1`). The server
+   refuses `agents.okthink.ai` for CORS and WebSocket upgrades by default; this
+   is the explicit opt-in. Both flags are written to `.env`, so restarts from
+   the app's Settings keep them.
+
+Before running it, a **tailnet admin** must turn on **MagicDNS** and **HTTPS
+Certificates** at [login.tailscale.com/admin/dns](https://login.tailscale.com/admin/dns).
+The script waits and re-checks if either is missing, so you can flip them mid-run.
+
+At the end it fetches `/api/status` over HTTPS at the MagicDNS name and confirms
+the server reports `hostedWebOriginTrusted: true` — so a clean finish means the
+hosted app really can connect, not just that the install completed. Then open
+`https://agents.okthink.ai` from any device on your tailnet and enter the
+MagicDNS name it printed (no scheme, no port — the app adds `https://` and 4801).
+
+**Notes**
+
+- Hosted mode requires port 4801. The hosted client rejects a custom port, so
+  the script refuses a `PORT` override rather than building for several minutes
+  and failing at the end.
+- Tailscale certificates don't renew themselves. Renew from the app's
+  **Settings → Tailscale HTTPS** (it warns ahead of expiry) and restart Agent
+  Manager afterwards.
+- Trusting the hosted origin gives any page from `agents.okthink.ai` the same
+  API access as your tailnet. Undo it by deleting `CM_ALLOW_HOSTED_WEB_ORIGIN`
+  from the checkout's `.env` and restarting; the app shows whether it's on.
+- Re-running with `--tailscale` or `--localhost` switches back cleanly — each
+  mode clears the flags it doesn't use.
 
 ## Demo Box — a cheap instance guests can play with
 
