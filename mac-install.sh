@@ -124,6 +124,50 @@ port_listening() {
     lsof -i ":$1" -sTCP:LISTEN &>/dev/null
 }
 
+# The scheme this checkout's server will actually serve. It picks HTTPS purely
+# from certificate presence, with no reference to the access mode — so a box
+# that was once in hosted mode keeps serving HTTPS after switching back, and
+# printing an http:// URL for it sends people to a dead page. Both the pointer
+# layout and the older flat pair count as installed.
+server_scheme() {
+    if [[ -e "$INSTALL_DIR/.certs/current/cert.pem" || -e "$INSTALL_DIR/.certs/cert.pem" ]]; then
+        echo "https"
+    else
+        echo "http"
+    fi
+}
+
+# Replace any running am-server with a fresh one and wait for the port. Always a
+# brand-new session: the old pane may not be an idle shell (a leftover less, or
+# the dying server) and would swallow the command. Returns non-zero if the
+# server doesn't come up in time.
+start_server_session() {
+    if tmux has-session -t am-server 2>/dev/null; then
+        info "Stopping the existing 'am-server' session..."
+        tmux send-keys -t am-server C-c 2>/dev/null || true
+        sleep 2
+        tmux kill-session -t am-server 2>/dev/null || true
+        # The old process can hold the port briefly after the session dies.
+        for _ in $(seq 1 10); do
+            port_listening "$PORT" || break
+            sleep 1
+        done
+    fi
+    info "Starting server in tmux session 'am-server'..."
+    tmux new-session -d -s am-server -c "$INSTALL_DIR"
+    # Single-quote so the pane's shell expands $HOME/$NVM_DIR and sources nvm itself.
+    tmux send-keys -t am-server \
+        'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '"$LAUNCH_ENV npx tsx server/index.ts" Enter
+    # Poll for up to ~15s — a first `npx tsx` cold start (transpile + DB/model
+    # init) can take several seconds before the port is listening.
+    info "Waiting for the server to come up..."
+    for _ in $(seq 1 15); do
+        port_listening "$PORT" && return 0
+        sleep 1
+    done
+    return 1
+}
+
 # Locate the Tailscale CLI. Homebrew's cask and the App Store app both ship it
 # inside the app bundle rather than on PATH.
 TAILSCALE_APP_CLI="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
@@ -198,6 +242,17 @@ fi
 
 if [[ $EUID -eq 0 ]]; then
     err "Run this as your normal user, not root/sudo — everything installs into your home."
+    exit 1
+fi
+
+# Every step here is a prompt. Without a terminal each one reads EOF, and `set -e`
+# turns that into an exit with no message partway through the install. Say so
+# instead of dying without a word.
+if [[ ! -t 0 ]]; then
+    err "stdin is not a terminal, so the prompts can't be answered."
+    err "Download the script and run it from a terminal rather than piping curl into bash:"
+    err "  curl -fsSLO https://raw.githubusercontent.com/okthink-ai/agent-manager-setup/main/mac-install.sh"
+    err "  bash mac-install.sh --hosted"
     exit 1
 fi
 
@@ -503,6 +558,16 @@ if [[ ! -d "$INSTALL_DIR/apps/expo" ]]; then
     exit 1
 fi
 
+# Hosted mode leans on the app's own certificate tooling, which landed with the
+# hosted web app. Check it here, next to the guard above and before the install
+# and build, so an old checkout fails in seconds rather than after the export.
+if [[ "$ACCESS_MODE" == "hosted" ]] && ! grep -q '"tailscale:https:setup"' "$INSTALL_DIR/package.json"; then
+    err "The checkout at $INSTALL_DIR predates the hosted web app, so it has no"
+    err "certificate tooling. Update it first with:"
+    err "  bash migrate-to-expo.sh --dir $INSTALL_DIR"
+    exit 1
+fi
+
 # Run npm install with retry on auth failures (403 from GitHub Packages). The
 # repo's .npmrc points the @okthink-ai scope at GitHub Packages, which needs
 # GITHUB_TOKEN — exported inline here because the profile doesn't affect this shell.
@@ -713,11 +778,7 @@ if [[ "$ACCESS_MODE" != "localhost" ]]; then
             # The app owns certificate issuance, validation, and installation
             # into the runtime cert directory the server reads at startup —
             # don't reimplement `tailscale cert` here and guess where it lands.
-            if ! grep -q '"tailscale:https:setup"' "$INSTALL_DIR/package.json"; then
-                err "This checkout has no tailscale:https:setup script, so it predates the"
-                err "hosted web app. Update it first:  git -C $INSTALL_DIR pull"
-                exit 1
-            fi
+            # The checkout was verified back in section 5.
             while true; do
                 info "Issuing a Tailscale HTTPS certificate for $TS_DNS_NAME..."
                 # CM_TAILSCALE_BIN points the app at the same CLI we found — the
@@ -753,65 +814,73 @@ fi
 
 section "6/6  Start the Server"
 
+SERVER_STALE=false
 read -rp "Start the server now in a tmux session? (y/n): " START_NOW
 if [[ "$START_NOW" =~ ^[Yy] ]]; then
     STARTED=false
-    # Re-runs: never create the session twice — a duplicate `tmux new-session`
-    # fails hard and set -e would kill the script right before the summary.
-    if port_listening "$PORT"; then
+    # A server already on the port started before this run, so it predates the
+    # .env settings written above and any certificate issued during it. For
+    # localhost that's harmless; for the remote modes it's the whole point of
+    # the run, so offer the restart rather than describing one.
+    if port_listening "$PORT" && [[ "$ACCESS_MODE" == "localhost" ]]; then
         ok "Server is already running on port $PORT"
         STARTED=true
-        if [[ "$ACCESS_MODE" != "localhost" ]]; then
-            warn "If it was started before you chose $ACCESS_MODE mode, it's still on the"
-            warn "old settings — restart it to pick up the new ones:"
-            warn "  tmux kill-session -t am-server   then re-run this script"
+    elif port_listening "$PORT"; then
+        warn "A server is already running on port $PORT. It started before this run, so"
+        warn "it doesn't have the settings written above — $ACCESS_MODE access won't work"
+        warn "until it restarts."
+        read -rp "Restart it now? (Y/n): " WANT_RESTART
+        WANT_RESTART="${WANT_RESTART:-y}"
+        if [[ "$WANT_RESTART" =~ ^[Yy] ]]; then
+            if start_server_session; then
+                STARTED=true
+                ok "Server restarted on port $PORT"
+            else
+                warn "Server didn't come back within 15s — check: tmux attach -t am-server"
+            fi
+        else
+            STARTED=true
+            SERVER_STALE=true
+            warn "Leaving it running on the old settings."
         fi
-    elif tmux has-session -t am-server 2>/dev/null; then
-        warn "tmux session 'am-server' already exists but nothing is listening on :$PORT."
-        warn "Attach to see what happened: tmux attach -t am-server"
     else
-        info "Starting server in tmux session 'am-server'..."
-        tmux new-session -d -s am-server -c "$INSTALL_DIR"
-        # Single-quote so the pane's shell expands $HOME/$NVM_DIR and sources nvm itself.
-        tmux send-keys -t am-server \
-            'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '"$LAUNCH_ENV npx tsx server/index.ts" Enter
-        # Poll for up to ~15s — a first `npx tsx` cold start (transpile + DB/model
-        # init) can take several seconds before the port is listening.
-        info "Waiting for the server to come up..."
-        for _ in $(seq 1 15); do
-            if port_listening "$PORT"; then STARTED=true; break; fi
-            sleep 1
-        done
-        if [[ "$STARTED" == true ]]; then
+        if start_server_session; then
+            STARTED=true
             ok "Server is running on port $PORT"
         else
             warn "Server didn't come up within 15s — check: tmux attach -t am-server"
         fi
     fi
-    if [[ "$STARTED" == true && "$ACCESS_MODE" == "hosted" ]]; then
+    if [[ "$STARTED" == true && "$ACCESS_MODE" == "hosted" && "$TS_CERT_OK" == true ]]; then
         # Prove the whole chain before claiming success: HTTPS reachable at the
         # MagicDNS name, and the server actually reporting that it trusts the
         # hosted origin. /api/status reports the flag precisely so the person
         # connecting doesn't have to read the server's environment.
-        if [[ -n "$TS_DNS_NAME" && "$TS_CERT_OK" == true ]]; then
+        if [[ "$SERVER_STALE" == true ]]; then
+            warn "Skipping the hosted check — the server you kept running predates this setup."
+        elif [[ -n "$TS_DNS_NAME" ]]; then
             info "Verifying the hosted app can reach this server..."
             HOSTED_STATUS=$(curl -fsS --max-time 10 "https://$TS_DNS_NAME:$PORT/api/status" 2>/dev/null || echo "")
             if [[ -z "$HOSTED_STATUS" ]]; then
                 warn "Couldn't reach https://$TS_DNS_NAME:$PORT/api/status from this Mac."
-                warn "Check how the server came up:  tmux attach -t am-server"
+                warn "Either the server didn't load the certificate — check how it came up with"
+                warn "'tmux attach -t am-server' — or Tailscale isn't routing to this name yet."
             elif [[ "${HOSTED_STATUS// /}" == *'"hostedWebOriginTrusted":true'* ]]; then
                 ok "Verified: HTTPS is live and the server trusts $HOSTED_APP_URL"
             else
-                warn "The server answered but reports hostedWebOriginTrusted=false, so it"
-                warn "will refuse the hosted app. It's running on the old environment —"
-                warn "restart it:  tmux kill-session -t am-server   then re-run this script"
+                warn "The server answered but reports hostedWebOriginTrusted=false, so it will"
+                warn "refuse the hosted app. Restart it and it will pick the setting up from"
+                warn "$INSTALL_DIR/.env:  tmux kill-session -t am-server"
             fi
         fi
         read -rp "Open $HOSTED_APP_URL in your browser now? (y/n): " OPEN_NOW
         [[ "$OPEN_NOW" =~ ^[Yy] ]] && open "$HOSTED_APP_URL"
     elif [[ "$STARTED" == true ]]; then
-        read -rp "Open http://localhost:$PORT in your browser now? (y/n): " OPEN_NOW
-        [[ "$OPEN_NOW" =~ ^[Yy] ]] && open "http://localhost:$PORT"
+        # Scheme comes from the certificate, not the mode — a box that was once
+        # hosted still serves HTTPS here.
+        LOCAL_URL="$(server_scheme)://localhost:$PORT"
+        read -rp "Open $LOCAL_URL in your browser now? (y/n): " OPEN_NOW
+        [[ "$OPEN_NOW" =~ ^[Yy] ]] && open "$LOCAL_URL"
     fi
 fi
 
@@ -819,18 +888,32 @@ fi
 
 section "Install Complete!"
 
+# The server picks HTTPS from certificate presence alone, so the scheme has to
+# be read off the box rather than inferred from the access mode.
+SCHEME="$(server_scheme)"
+
+# Hosted access needs the certificate as much as it needs the flags. Without one
+# the setup is unfinished, and saying otherwise here is worse than saying nothing
+# — this is the last thing on screen, and it outlives the warnings above it.
+HOSTED_READY=false
+if [[ "$ACCESS_MODE" == "hosted" && "$TS_CERT_OK" == true ]]; then
+    HOSTED_READY=true
+fi
+
 printf "  ${GREEN}App dir:${NC}  %s\n" "$INSTALL_DIR"
-if [[ "$ACCESS_MODE" == "hosted" ]]; then
+if [[ "$HOSTED_READY" == true ]]; then
     printf "  ${GREEN}Open:${NC}     %s  (any browser on your tailnet)\n" "$HOSTED_APP_URL"
-    printf "  ${GREEN}Connect to:${NC} %s\n" "${TS_DNS_NAME:-<this-mac>.<tailnet>.ts.net}"
-    # With a certificate installed the whole listener is HTTPS, so the local URL
-    # is https too — and only the MagicDNS name matches the certificate.
-    printf "  ${GREEN}Local:${NC}    https://%s:%s\n" "${TS_DNS_NAME:-<this-mac>.<tailnet>.ts.net}" "$PORT"
+    printf "  ${GREEN}Connect to:${NC} %s\n" "$TS_DNS_NAME"
+    # Only the MagicDNS name matches the certificate, so that is the local URL too.
+    printf "  ${GREEN}Local:${NC}    https://%s:%s\n" "$TS_DNS_NAME" "$PORT"
+elif [[ "$ACCESS_MODE" == "hosted" ]]; then
+    printf "  ${YELLOW}Status:${NC}   unfinished — no HTTPS certificate on this Mac\n"
+    printf "  ${GREEN}Local:${NC}    %s://localhost:%s\n" "$SCHEME" "$PORT"
 elif [[ "$ACCESS_MODE" == "tailscale" ]]; then
-    printf "  ${GREEN}URL:${NC}      http://%s:%s  (any device on your tailnet)\n" "${TS_IP:-<tailscale-ip>}" "$PORT"
-    printf "  ${GREEN}Local:${NC}    http://localhost:%s\n" "$PORT"
+    printf "  ${GREEN}URL:${NC}      %s://%s:%s  (any device on your tailnet)\n" "$SCHEME" "${TS_IP:-<tailscale-ip>}" "$PORT"
+    printf "  ${GREEN}Local:${NC}    %s://localhost:%s\n" "$SCHEME" "$PORT"
 else
-    printf "  ${GREEN}URL:${NC}      http://localhost:%s\n" "$PORT"
+    printf "  ${GREEN}URL:${NC}      %s://localhost:%s\n" "$SCHEME" "$PORT"
 fi
 echo ""
 
@@ -842,16 +925,21 @@ if [[ ! "$START_NOW" =~ ^[Yy] ]]; then
     echo ""
 fi
 
-if [[ "$ACCESS_MODE" == "hosted" ]]; then
+if [[ "$HOSTED_READY" == true ]]; then
     echo "  Then, from any device signed into your tailnet, open:"
     echo ""
     printf "    ${CYAN}%s${NC}\n" "$HOSTED_APP_URL"
     echo ""
     echo "  and enter this address when it asks which server to connect to:"
     echo ""
-    printf "    ${CYAN}%s${NC}\n" "${TS_DNS_NAME:-<this-mac>.<tailnet>.ts.net}"
+    printf "    ${CYAN}%s${NC}\n" "$TS_DNS_NAME"
     echo ""
     echo "  Enter the name on its own — no https://, no port. The app adds both."
+    echo ""
+    printf "  ${YELLOW}First connection:${NC} your browser will ask whether the page may reach\n"
+    echo "  devices on your local network. Allow it — that prompt is the hosted page"
+    echo "  asking to talk to this Mac, which is the only way it works. Blocking it"
+    echo "  fails the connection with an error that won't mention the permission."
     echo ""
     printf "  ${YELLOW}Certificate:${NC} Tailscale certificates don't renew themselves. Renew from\n"
     echo "  the app's Settings → Tailscale HTTPS (it warns before expiry) and restart"
@@ -861,17 +949,39 @@ if [[ "$ACCESS_MODE" == "hosted" ]]; then
     echo "  (e.g. home Wi-Fi) can reach the port too — not just the tailnet. It also"
     echo "  trusts every page served from $HOSTED_APP_URL. Turn it off by deleting"
     echo "  CM_ALLOW_HOSTED_WEB_ORIGIN from $INSTALL_DIR/.env and restarting."
+elif [[ "$ACCESS_MODE" == "hosted" ]]; then
+    echo "  Hosted access isn't finished. This Mac has no Tailscale HTTPS certificate,"
+    echo "  and the hosted app is served over HTTPS, so a browser won't let it call a"
+    echo "  plaintext server. Don't bother trying $HOSTED_APP_URL until this is done."
+    echo ""
+    echo "  To finish:"
+    echo ""
+    echo "    1. Turn on MagicDNS and HTTPS Certificates for your tailnet (admin only):"
+    printf "         ${CYAN}https://login.tailscale.com/admin/dns${NC}\n"
+    echo "    2. Make sure Tailscale is signed in on this Mac."
+    echo "    3. Re-run this script, or use Settings → Tailscale HTTPS in the app and"
+    echo "       restart Agent Manager afterwards."
+    echo ""
+    printf "  Meanwhile the dashboard works here: ${CYAN}%s://localhost:%s${NC}\n" "$SCHEME" "$PORT"
 else
     echo "  Then open in your browser:"
     echo ""
     if [[ "$ACCESS_MODE" == "tailscale" ]]; then
-        printf "    ${CYAN}http://%s:%s${NC}  (from any device on your tailnet)\n" "${TS_IP:-<tailscale-ip>}" "$PORT"
+        printf "    ${CYAN}%s://%s:%s${NC}  (from any device on your tailnet)\n" "$SCHEME" "${TS_IP:-<tailscale-ip>}" "$PORT"
         echo ""
         printf "  ${YELLOW}Note:${NC} Tailscale mode binds all interfaces, so the dashboard is also\n"
         echo "  reachable from this Mac's local network (e.g. home Wi-Fi) — not just the"
         echo "  tailnet. Fine on a network you trust; worth knowing on one you don't."
     else
-        printf "    ${CYAN}http://localhost:%s${NC}\n" "$PORT"
+        printf "    ${CYAN}%s://localhost:%s${NC}\n" "$SCHEME" "$PORT"
+    fi
+    if [[ "$SCHEME" == "https" ]]; then
+        echo ""
+        printf "  ${YELLOW}Note:${NC} a Tailscale HTTPS certificate from an earlier hosted setup is\n"
+        echo "  still installed, so the server serves HTTPS rather than plain HTTP — hence"
+        echo "  the scheme above. Only this Mac's MagicDNS name matches that certificate,"
+        echo "  so other addresses will warn. Delete $INSTALL_DIR/.certs and restart the"
+        echo "  server to go back to HTTP."
     fi
 fi
 echo ""
