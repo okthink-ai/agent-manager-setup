@@ -32,7 +32,9 @@
 #   PORT     — server port (default 4801; hosted mode requires 4801)
 #
 # Designed to be idempotent — safe to re-run after a failure. It won't clobber
-# an existing checkout, .env files, or your Claude Code settings.
+# an existing checkout, .env files, or your Claude Code settings, and it skips
+# the dependency install and frontend build when the checkout hasn't moved since
+# the last successful run (--rebuild forces them).
 #
 # NOTE: stays compatible with macOS's stock bash 3.2 — no associative arrays,
 # no ${var,,}, etc.
@@ -72,24 +74,28 @@ HOSTED_REQUIRED_PORT=4801
 
 usage() {
     cat <<'USAGEEOF'
-Usage: bash mac-install.sh [--localhost | --tailscale | --hosted]
+Usage: bash mac-install.sh [--localhost | --tailscale | --hosted] [--rebuild]
 
   --localhost   reach the dashboard at http://localhost:4801 (default)
   --tailscale   also reach it from your other devices at http://<ts-ip>:4801
   --hosted      reach it from the hosted web app at https://agents.okthink.ai
                 (installs Tailscale, issues an HTTPS certificate for this Mac,
                 and trusts the hosted origin)
+  --rebuild     reinstall dependencies and rebuild the frontend even if the
+                checkout hasn't changed since the last run
 
 With no flag the script asks. Env: GH_TOKEN, PORT.
 USAGEEOF
 }
 
 ACCESS_MODE_FLAG=""
+FORCE_REBUILD=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --hosted)    ACCESS_MODE_FLAG="hosted" ;;
         --tailscale) ACCESS_MODE_FLAG="tailscale" ;;
         --localhost) ACCESS_MODE_FLAG="localhost" ;;
+        --rebuild)   FORCE_REBUILD=true ;;
         -h|--help)   usage; exit 0 ;;
         *)           err "Unknown option: $1"; echo ""; usage; exit 1 ;;
     esac
@@ -122,6 +128,23 @@ load_nvm() {
 # True if something is listening on the given TCP port. lsof ships with macOS.
 port_listening() {
     lsof -i ":$1" -sTCP:LISTEN &>/dev/null
+}
+
+# checkout_already_built — true when this exact commit was installed and built by
+# an earlier run and both outputs are still in place. Re-runs are the norm here,
+# not the exception: a stall at Tailscale sign-in or a failed certificate sends
+# people straight back through this script, and npm install plus the Expo export
+# cost minutes to reproduce output that hasn't changed. A dirty working tree
+# falls through to a rebuild rather than trusting a stamp that only names a
+# commit.
+checkout_already_built() {
+    if [[ "$FORCE_REBUILD" == true ]]; then return 1; fi
+    [[ -f "$BUILD_STAMP" ]] || return 1
+    [[ -d "$INSTALL_DIR/node_modules" && -d "$INSTALL_DIR/apps/expo/dist" ]] || return 1
+    git -C "$INSTALL_DIR" diff --quiet HEAD 2>/dev/null || return 1
+    local head
+    head=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) || return 1
+    [[ "$(cat "$BUILD_STAMP" 2>/dev/null)" == "$head" ]]
 }
 
 # The scheme this checkout's server will actually serve. It picks HTTPS purely
@@ -284,6 +307,12 @@ read -rp "Install directory for Agent Manager [$DEFAULT_DIR]: " INSTALL_DIR
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_DIR}"
 # Expand a leading ~ to $HOME (the shell won't, since it's inside a variable).
 INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
+
+# Records the commit the last successful install and build ran against. It lives
+# under data/ because that directory is gitignored and belongs to this checkout,
+# so the stamp travels and is deleted with it instead of showing up as an
+# untracked file in git status.
+BUILD_STAMP="$INSTALL_DIR/data/.install-build-stamp"
 
 # How you'll reach Agent Manager. This decides how the server binds, and in
 # hosted mode also whether it serves HTTPS and which browser origins it trusts:
@@ -599,8 +628,21 @@ npm_install_with_retry() {
     done
 }
 
-# One root install covers the frontend too (npm workspaces: apps/*).
-npm_install_with_retry "$INSTALL_DIR" "root"
+# One root install covers the frontend too (npm workspaces: apps/*). Both this
+# and the build below are skipped together — the stamp is only written after
+# both succeed, so a matching stamp means node_modules and the export are the
+# ones this commit produced. Everything between them still runs: the access
+# mode, project directories, and Firebase config all have to be re-applied on
+# a re-run, and none of them affect the build output.
+mkdir -p "$INSTALL_DIR/data"
+SKIP_BUILD=false
+if checkout_already_built; then
+    SKIP_BUILD=true
+    ok "Dependencies and frontend are already built for this checkout — skipping both"
+    info "Pass --rebuild to force them."
+else
+    npm_install_with_retry "$INSTALL_DIR" "root"
+fi
 
 # Copy .env.example → .env if present and .env is absent.
 if [[ -f "$INSTALL_DIR/.env.example" && ! -f "$INSTALL_DIR/.env" ]]; then
@@ -677,9 +719,16 @@ ENVEOF
 fi
 
 # Build the Expo web export for prod mode (served by the single server on $PORT).
-info "Building frontend for production (expo export — takes a few minutes)..."
-( load_nvm; cd "$INSTALL_DIR" && npm run build )
-ok "Frontend built"
+if [[ "$SKIP_BUILD" == true ]]; then
+    ok "Frontend already built for this checkout — skipping the export"
+else
+    info "Building frontend for production (expo export — takes a few minutes)..."
+    ( load_nvm; cd "$INSTALL_DIR" && npm run build )
+    ok "Frontend built"
+    # Written only now, so a stamp always means both steps finished. A failure
+    # anywhere above leaves the old stamp (or none) and the next run redoes both.
+    git -C "$INSTALL_DIR" rev-parse HEAD > "$BUILD_STAMP" 2>/dev/null || true
+fi
 
 # Set server mode to prod so future restarts preserve the mode.
 echo "prod" > "$INSTALL_DIR/.server-mode"
