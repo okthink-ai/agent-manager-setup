@@ -4,8 +4,12 @@
 #
 # Run this ON your Mac, as your normal user. This is the local-machine path:
 # no VPS, no SSH hardening, no firewall. You choose how to reach the app:
-# just this Mac's browser (http://localhost:4801) or also from your other
-# devices over your Tailscale network (e.g. a Mac mini used as a home server).
+#
+#   localhost — just this Mac's browser (http://localhost:4801)
+#   tailscale — also from your other devices, over your Tailscale network
+#   hosted    — from the hosted web app at https://agents.okthink.ai, in any
+#               browser on your tailnet. The page is a static bundle with no
+#               backend: it connects straight to the server on this Mac.
 #
 # It:
 #   1. Checks Homebrew and installs any missing base tools (git, tmux, gh)
@@ -13,12 +17,19 @@
 #   3. Authenticates GitHub CLI (interactive, or GH_TOKEN)
 #   4. Installs the AI coding agents you choose — Claude Code, Codex, Gemini, Pi
 #   5. Clones Agent Manager into a directory you choose and builds it (prod mode)
-#      (in tailscale mode, also installs Tailscale and walks you through sign-in)
+#      (in tailscale/hosted mode, also installs Tailscale and signs you in)
 #   6. Optionally starts the server in a tmux session
+#
+# Hosted mode additionally issues a Tailscale HTTPS certificate for this Mac and
+# trusts the hosted origin, which is what the hosted app requires to connect:
+# it is served over HTTPS, so a browser blocks it from calling an http:// server.
+#
+# Flags:
+#   --hosted | --tailscale | --localhost   pick the access mode non-interactively
 #
 # Optional env vars:
 #   GH_TOKEN — a GitHub PAT with repo + read:packages (skips the browser login)
-#   PORT     — server port (default 4801)
+#   PORT     — server port (default 4801; hosted mode requires 4801)
 #
 # Designed to be idempotent — safe to re-run after a failure. It won't clobber
 # an existing checkout, .env files, or your Claude Code settings.
@@ -52,6 +63,38 @@ section() {
 REPO_URL="https://github.com/okthink-ai/claude-manager.git"
 PORT="${PORT:-4801}"
 GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+
+# The hosted web app, and the one port it will connect to. The hosted client
+# rejects a user-entered port and always normalizes to https://<host>:4801, so
+# a custom PORT can't work in that mode.
+HOSTED_APP_URL="https://agents.okthink.ai"
+HOSTED_REQUIRED_PORT=4801
+
+usage() {
+    cat <<'USAGEEOF'
+Usage: bash mac-install.sh [--localhost | --tailscale | --hosted]
+
+  --localhost   reach the dashboard at http://localhost:4801 (default)
+  --tailscale   also reach it from your other devices at http://<ts-ip>:4801
+  --hosted      reach it from the hosted web app at https://agents.okthink.ai
+                (installs Tailscale, issues an HTTPS certificate for this Mac,
+                and trusts the hosted origin)
+
+With no flag the script asks. Env: GH_TOKEN, PORT.
+USAGEEOF
+}
+
+ACCESS_MODE_FLAG=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --hosted)    ACCESS_MODE_FLAG="hosted" ;;
+        --tailscale) ACCESS_MODE_FLAG="tailscale" ;;
+        --localhost) ACCESS_MODE_FLAG="localhost" ;;
+        -h|--help)   usage; exit 0 ;;
+        *)           err "Unknown option: $1"; echo ""; usage; exit 1 ;;
+    esac
+    shift
+done
 
 # The shell profile future terminals read. Macs default to zsh; respect a bash
 # user if that's what they run.
@@ -92,6 +135,39 @@ tailscale_cli() {
     else
         return 1
     fi
+}
+
+# This Mac's MagicDNS name (e.g. my-mac.tailnet-name.ts.net), or empty. Needs
+# Tailscale signed in *and* MagicDNS enabled for the tailnet. Parsed with node
+# rather than grep because the status JSON has several DNSName fields — only
+# Self's is this machine's. Mirrors cleanDnsName() in the app's tailscale-https.
+#   tailscale_dns_name <tailscale-binary>
+tailscale_dns_name() {
+    "$1" status --json 2>/dev/null | ( load_nvm; node -e '
+        let raw = ""
+        process.stdin.on("data", (chunk) => { raw += chunk })
+        process.stdin.on("end", () => {
+            try {
+                const self = JSON.parse(raw).Self
+                const name = String((self && self.DNSName) || "").trim().replace(/\.$/, "").toLowerCase()
+                if (name.endsWith(".ts.net")) process.stdout.write(name)
+            } catch (error) { /* not signed in, or no MagicDNS name yet */ }
+        })
+    ' ) 2>/dev/null
+}
+
+# Idempotent .env edits — exactly one KEY= line, or none. The server reads .env
+# on every start, so settings written here survive UI-triggered restarts, which
+# don't carry the launch environment. BSD sed needs the empty -i argument.
+#   set_env_var <file> <KEY> <value>   /   unset_env_var <file> <KEY>
+set_env_var() {
+    touch "$1"
+    sed -i '' "/^$2=/d" "$1"
+    printf '%s=%s\n' "$2" "$3" >> "$1"
+}
+unset_env_var() {
+    [[ -f "$1" ]] || return 0
+    sed -i '' "/^$2=/d" "$1"
 }
 
 # Install an optional global npm CLI (idempotent). A failed install warns and
@@ -154,28 +230,52 @@ INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_DIR}"
 # Expand a leading ~ to $HOME (the shell won't, since it's inside a variable).
 INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 
-# How you'll reach Agent Manager. This decides how the server binds:
+# How you'll reach Agent Manager. This decides how the server binds, and in
+# hosted mode also whether it serves HTTPS and which browser origins it trusts:
 #   localhost → loopback (127.0.0.1) only; this Mac's browser. Most private.
 #   tailscale → all interfaces (0.0.0.0); reach it from your other devices at
 #               http://<this-mac's-tailscale-ip>:PORT.
-echo ""
-echo "  How will you reach Agent Manager?"
-echo "    1) localhost — just this Mac's browser (most private)"
-echo "    2) tailscale — also from your other devices, over your Tailscale network"
-echo ""
-read -rp "Access mode [1=localhost / 2=tailscale] (default 1): " ACCESS_CHOICE
-case "$ACCESS_CHOICE" in
-    2|t*|T*) ACCESS_MODE="tailscale" ;;
-    *)       ACCESS_MODE="localhost" ;;
-esac
-
-# Env prefix for launching the server. Tailscale mode sets CM_TERMINAL_ALLOW_LAN=1
-# (bind 0.0.0.0); localhost mode omits it so the server binds loopback.
-if [[ "$ACCESS_MODE" == "tailscale" ]]; then
-    LAUNCH_ENV="CM_TERMINAL_ALLOW_LAN=1 PORT=$PORT"
+#   hosted    → same binding as tailscale, plus a Tailscale HTTPS certificate
+#               and CM_ALLOW_HOSTED_WEB_ORIGIN=1, so the static app served from
+#               agents.okthink.ai can call this server. Both are required: the
+#               hosted page is HTTPS (so a plaintext server is blocked as mixed
+#               content) and the server refuses that origin unless told not to.
+if [[ -n "$ACCESS_MODE_FLAG" ]]; then
+    ACCESS_MODE="$ACCESS_MODE_FLAG"
 else
-    LAUNCH_ENV="PORT=$PORT"
+    echo ""
+    echo "  How will you reach Agent Manager?"
+    echo "    1) localhost — just this Mac's browser (most private)"
+    echo "    2) tailscale — also from your other devices, over your Tailscale network"
+    echo "    3) hosted    — from $HOSTED_APP_URL, in any browser on your tailnet"
+    echo ""
+    read -rp "Access mode [1=localhost / 2=tailscale / 3=hosted] (default 1): " ACCESS_CHOICE
+    case "$ACCESS_CHOICE" in
+        2|t*|T*) ACCESS_MODE="tailscale" ;;
+        3|h*|H*) ACCESS_MODE="hosted" ;;
+        *)       ACCESS_MODE="localhost" ;;
+    esac
 fi
+
+# The hosted client normalizes every address to https://<host>:4801 and rejects
+# an explicit port, so a server on any other port is unreachable from it. Fail
+# now rather than at the end, after a multi-minute build.
+if [[ "$ACCESS_MODE" == "hosted" && "$PORT" != "$HOSTED_REQUIRED_PORT" ]]; then
+    err "Hosted mode requires port $HOSTED_REQUIRED_PORT, but PORT=$PORT was set."
+    err "The hosted app always connects to https://<machine>.<tailnet>.ts.net:$HOSTED_REQUIRED_PORT"
+    err "and rejects a custom port, so it could never reach a server on :$PORT."
+    err "Re-run without PORT set, or use --tailscale for a custom port."
+    exit 1
+fi
+
+# Env prefix for launching the server. Tailscale and hosted modes set
+# CM_TERMINAL_ALLOW_LAN=1 (bind 0.0.0.0) — without it the server binds loopback
+# and no other device can reach it; localhost mode omits it.
+case "$ACCESS_MODE" in
+    hosted)    LAUNCH_ENV="CM_TERMINAL_ALLOW_LAN=1 CM_ALLOW_HOSTED_WEB_ORIGIN=1 PORT=$PORT" ;;
+    tailscale) LAUNCH_ENV="CM_TERMINAL_ALLOW_LAN=1 PORT=$PORT" ;;
+    *)         LAUNCH_ENV="PORT=$PORT" ;;
+esac
 
 # Where your projects live — the dashboard lists projects and launch targets
 # from here, and shows nothing until it's configured. Seeded into .env as
@@ -443,25 +543,38 @@ if [[ -f "$INSTALL_DIR/.env.example" && ! -f "$INSTALL_DIR/.env" ]]; then
     ok "Copied .env.example to .env"
 fi
 
-# Configure the bind mode in .env. The server reads .env via dotenv and binds
-# 0.0.0.0 only when CM_TERMINAL_ALLOW_LAN=1; otherwise it binds loopback. Set
-# here (rather than only inline at launch) so UI-triggered restarts — which
-# don't pass the env var themselves — keep the same binding. BSD sed needs -i ''.
+# Configure the access mode in .env. The server reads .env on every start, so
+# writing the flags here (rather than only inline at launch) keeps UI-triggered
+# restarts — which don't carry the launch environment — on the same settings.
+# Each mode clears the flags it doesn't use, so re-running with a different mode
+# actually switches rather than accumulating.
 touch "$INSTALL_DIR/.env"
-if [[ "$ACCESS_MODE" == "tailscale" ]]; then
-    # Ensure exactly one CM_TERMINAL_ALLOW_LAN=1 line.
-    sed -i '' '/^CM_TERMINAL_ALLOW_LAN=/d' "$INSTALL_DIR/.env"
-    echo 'CM_TERMINAL_ALLOW_LAN=1' >> "$INSTALL_DIR/.env"
-    ok "Set CM_TERMINAL_ALLOW_LAN=1 in .env (Tailscale access, binds 0.0.0.0)"
-else
-    # Localhost only: strip any LAN flag so the server binds loopback.
-    if grep -q '^CM_TERMINAL_ALLOW_LAN=' "$INSTALL_DIR/.env" 2>/dev/null; then
-        sed -i '' '/^CM_TERMINAL_ALLOW_LAN=/d' "$INSTALL_DIR/.env"
-        ok "Removed CM_TERMINAL_ALLOW_LAN from .env (localhost only, binds loopback)"
-    else
-        ok "Localhost only — server binds loopback (127.0.0.1)"
-    fi
-fi
+case "$ACCESS_MODE" in
+    hosted)
+        set_env_var "$INSTALL_DIR/.env" CM_TERMINAL_ALLOW_LAN 1
+        set_env_var "$INSTALL_DIR/.env" CM_ALLOW_HOSTED_WEB_ORIGIN 1
+        ok "Set CM_TERMINAL_ALLOW_LAN=1 and CM_ALLOW_HOSTED_WEB_ORIGIN=1 in .env"
+        info "The second one is the opt-in that lets $HOSTED_APP_URL call this"
+        info "server. It grants any page from that origin the same API access as"
+        info "your tailnet — the app reports it in Settings so it stays visible."
+        ;;
+    tailscale)
+        set_env_var "$INSTALL_DIR/.env" CM_TERMINAL_ALLOW_LAN 1
+        unset_env_var "$INSTALL_DIR/.env" CM_ALLOW_HOSTED_WEB_ORIGIN
+        ok "Set CM_TERMINAL_ALLOW_LAN=1 in .env (Tailscale access, binds 0.0.0.0)"
+        ;;
+    *)
+        # Localhost only: strip both flags so the server binds loopback and
+        # trusts no remote origin.
+        if grep -qE '^(CM_TERMINAL_ALLOW_LAN|CM_ALLOW_HOSTED_WEB_ORIGIN)=' "$INSTALL_DIR/.env" 2>/dev/null; then
+            unset_env_var "$INSTALL_DIR/.env" CM_TERMINAL_ALLOW_LAN
+            unset_env_var "$INSTALL_DIR/.env" CM_ALLOW_HOSTED_WEB_ORIGIN
+            ok "Cleared remote-access flags from .env (localhost only, binds loopback)"
+        else
+            ok "Localhost only — server binds loopback (127.0.0.1)"
+        fi
+        ;;
+esac
 
 # Seed the projects directory so the dashboard isn't empty on first load. The
 # UI's Settings panel writes to the DB, which takes priority over this value.
@@ -510,8 +623,14 @@ ok "Server mode set to prod"
 # ─── Optional: Tailscale access ──────────────────────────────────────
 
 TS_IP=""
-if [[ "$ACCESS_MODE" == "tailscale" ]]; then
-    section "Tailscale Access"
+TS_DNS_NAME=""
+TS_CERT_OK=false
+if [[ "$ACCESS_MODE" != "localhost" ]]; then
+    if [[ "$ACCESS_MODE" == "hosted" ]]; then
+        section "Tailscale Access & HTTPS Certificate"
+    else
+        section "Tailscale Access"
+    fi
 
     if tailscale_cli >/dev/null; then
         # Already installed — cask, App Store, or Homebrew formula all count.
@@ -567,6 +686,66 @@ if [[ "$ACCESS_MODE" == "tailscale" ]]; then
             warn "Continuing without Tailscale sign-in. Sign in later via the menu-bar"
             warn "app; this Mac's IP appears there and the URL below will start working."
         fi
+
+        # Hosted mode needs more than an IP. The hosted page is served over
+        # HTTPS, so the browser will only let it call an HTTPS server, and the
+        # certificate has to match the name it dials — which is why the hosted
+        # app takes a MagicDNS name and rejects an IP or a short machine name.
+        # Tailscale issues a real certificate for exactly that name.
+        if [[ "$ACCESS_MODE" == "hosted" && -n "$TS_IP" ]]; then
+            while true; do
+                TS_DNS_NAME=$(tailscale_dns_name "$TS_BIN")
+                [[ -n "$TS_DNS_NAME" ]] && break
+                echo ""
+                warn "Tailscale reports no MagicDNS name (.ts.net) for this Mac."
+                echo "  Turn on MagicDNS and HTTPS Certificates for your tailnet — both are"
+                echo "  switches on this page, and you need to be a tailnet admin:"
+                echo ""
+                printf "    ${CYAN}https://login.tailscale.com/admin/dns${NC}\n"
+                echo ""
+                read -rp "  Press Enter to re-check, or 's' to skip for now: " TS_DNS_SKIP
+                [[ "$TS_DNS_SKIP" =~ ^[Ss] ]] && break
+            done
+        fi
+
+        if [[ -n "$TS_DNS_NAME" ]]; then
+            ok "MagicDNS name: $TS_DNS_NAME"
+            # The app owns certificate issuance, validation, and installation
+            # into the runtime cert directory the server reads at startup —
+            # don't reimplement `tailscale cert` here and guess where it lands.
+            if ! grep -q '"tailscale:https:setup"' "$INSTALL_DIR/package.json"; then
+                err "This checkout has no tailscale:https:setup script, so it predates the"
+                err "hosted web app. Update it first:  git -C $INSTALL_DIR pull"
+                exit 1
+            fi
+            while true; do
+                info "Issuing a Tailscale HTTPS certificate for $TS_DNS_NAME..."
+                # CM_TAILSCALE_BIN points the app at the same CLI we found — the
+                # cask keeps it inside the app bundle, off PATH.
+                if ( load_nvm; export CM_TAILSCALE_BIN="$TS_BIN"; cd "$INSTALL_DIR" && npm run tailscale:https:setup ); then
+                    TS_CERT_OK=true
+                    ok "Certificate installed — the server serves HTTPS on port $PORT"
+                    break
+                fi
+                echo ""
+                warn "Certificate setup failed. The usual cause is HTTPS Certificates being"
+                warn "off for the tailnet — a tailnet admin enables it here:"
+                echo ""
+                printf "    ${CYAN}https://login.tailscale.com/admin/dns${NC}\n"
+                echo ""
+                read -rp "  Press Enter to retry, or 's' to skip for now: " TS_CERT_SKIP
+                [[ "$TS_CERT_SKIP" =~ ^[Ss] ]] && break
+            done
+        fi
+
+    fi
+
+    # Outside the CLI check on purpose: declining the Tailscale install lands
+    # here too, and that is exactly the case that needs the warning.
+    if [[ "$ACCESS_MODE" == "hosted" && "$TS_CERT_OK" != true ]]; then
+        warn "Without a certificate this server speaks plain HTTP, and the hosted app"
+        warn "will refuse it as mixed content. You can finish later from the app's"
+        warn "Settings → Tailscale HTTPS, then restart the server."
     fi
 fi
 
@@ -582,9 +761,9 @@ if [[ "$START_NOW" =~ ^[Yy] ]]; then
     if port_listening "$PORT"; then
         ok "Server is already running on port $PORT"
         STARTED=true
-        if [[ "$ACCESS_MODE" == "tailscale" ]]; then
-            warn "If it was started before you chose Tailscale mode, it's still bound to"
-            warn "loopback — restart it to pick up the new binding:"
+        if [[ "$ACCESS_MODE" != "localhost" ]]; then
+            warn "If it was started before you chose $ACCESS_MODE mode, it's still on the"
+            warn "old settings — restart it to pick up the new ones:"
             warn "  tmux kill-session -t am-server   then re-run this script"
         fi
     elif tmux has-session -t am-server 2>/dev/null; then
@@ -609,7 +788,28 @@ if [[ "$START_NOW" =~ ^[Yy] ]]; then
             warn "Server didn't come up within 15s — check: tmux attach -t am-server"
         fi
     fi
-    if [[ "$STARTED" == true ]]; then
+    if [[ "$STARTED" == true && "$ACCESS_MODE" == "hosted" ]]; then
+        # Prove the whole chain before claiming success: HTTPS reachable at the
+        # MagicDNS name, and the server actually reporting that it trusts the
+        # hosted origin. /api/status reports the flag precisely so the person
+        # connecting doesn't have to read the server's environment.
+        if [[ -n "$TS_DNS_NAME" && "$TS_CERT_OK" == true ]]; then
+            info "Verifying the hosted app can reach this server..."
+            HOSTED_STATUS=$(curl -fsS --max-time 10 "https://$TS_DNS_NAME:$PORT/api/status" 2>/dev/null || echo "")
+            if [[ -z "$HOSTED_STATUS" ]]; then
+                warn "Couldn't reach https://$TS_DNS_NAME:$PORT/api/status from this Mac."
+                warn "Check how the server came up:  tmux attach -t am-server"
+            elif [[ "${HOSTED_STATUS// /}" == *'"hostedWebOriginTrusted":true'* ]]; then
+                ok "Verified: HTTPS is live and the server trusts $HOSTED_APP_URL"
+            else
+                warn "The server answered but reports hostedWebOriginTrusted=false, so it"
+                warn "will refuse the hosted app. It's running on the old environment —"
+                warn "restart it:  tmux kill-session -t am-server   then re-run this script"
+            fi
+        fi
+        read -rp "Open $HOSTED_APP_URL in your browser now? (y/n): " OPEN_NOW
+        [[ "$OPEN_NOW" =~ ^[Yy] ]] && open "$HOSTED_APP_URL"
+    elif [[ "$STARTED" == true ]]; then
         read -rp "Open http://localhost:$PORT in your browser now? (y/n): " OPEN_NOW
         [[ "$OPEN_NOW" =~ ^[Yy] ]] && open "http://localhost:$PORT"
     fi
@@ -620,7 +820,13 @@ fi
 section "Install Complete!"
 
 printf "  ${GREEN}App dir:${NC}  %s\n" "$INSTALL_DIR"
-if [[ "$ACCESS_MODE" == "tailscale" ]]; then
+if [[ "$ACCESS_MODE" == "hosted" ]]; then
+    printf "  ${GREEN}Open:${NC}     %s  (any browser on your tailnet)\n" "$HOSTED_APP_URL"
+    printf "  ${GREEN}Connect to:${NC} %s\n" "${TS_DNS_NAME:-<this-mac>.<tailnet>.ts.net}"
+    # With a certificate installed the whole listener is HTTPS, so the local URL
+    # is https too — and only the MagicDNS name matches the certificate.
+    printf "  ${GREEN}Local:${NC}    https://%s:%s\n" "${TS_DNS_NAME:-<this-mac>.<tailnet>.ts.net}" "$PORT"
+elif [[ "$ACCESS_MODE" == "tailscale" ]]; then
     printf "  ${GREEN}URL:${NC}      http://%s:%s  (any device on your tailnet)\n" "${TS_IP:-<tailscale-ip>}" "$PORT"
     printf "  ${GREEN}Local:${NC}    http://localhost:%s\n" "$PORT"
 else
@@ -636,16 +842,37 @@ if [[ ! "$START_NOW" =~ ^[Yy] ]]; then
     echo ""
 fi
 
-echo "  Then open in your browser:"
-echo ""
-if [[ "$ACCESS_MODE" == "tailscale" ]]; then
-    printf "    ${CYAN}http://%s:%s${NC}  (from any device on your tailnet)\n" "${TS_IP:-<tailscale-ip>}" "$PORT"
+if [[ "$ACCESS_MODE" == "hosted" ]]; then
+    echo "  Then, from any device signed into your tailnet, open:"
     echo ""
-    printf "  ${YELLOW}Note:${NC} Tailscale mode binds all interfaces, so the dashboard is also\n"
-    echo "  reachable from this Mac's local network (e.g. home Wi-Fi) — not just the"
-    echo "  tailnet. Fine on a network you trust; worth knowing on one you don't."
+    printf "    ${CYAN}%s${NC}\n" "$HOSTED_APP_URL"
+    echo ""
+    echo "  and enter this address when it asks which server to connect to:"
+    echo ""
+    printf "    ${CYAN}%s${NC}\n" "${TS_DNS_NAME:-<this-mac>.<tailnet>.ts.net}"
+    echo ""
+    echo "  Enter the name on its own — no https://, no port. The app adds both."
+    echo ""
+    printf "  ${YELLOW}Certificate:${NC} Tailscale certificates don't renew themselves. Renew from\n"
+    echo "  the app's Settings → Tailscale HTTPS (it warns before expiry) and restart"
+    echo "  Agent Manager afterwards."
+    echo ""
+    printf "  ${YELLOW}Note:${NC} Hosted mode binds all interfaces, so this Mac's local network\n"
+    echo "  (e.g. home Wi-Fi) can reach the port too — not just the tailnet. It also"
+    echo "  trusts every page served from $HOSTED_APP_URL. Turn it off by deleting"
+    echo "  CM_ALLOW_HOSTED_WEB_ORIGIN from $INSTALL_DIR/.env and restarting."
 else
-    printf "    ${CYAN}http://localhost:%s${NC}\n" "$PORT"
+    echo "  Then open in your browser:"
+    echo ""
+    if [[ "$ACCESS_MODE" == "tailscale" ]]; then
+        printf "    ${CYAN}http://%s:%s${NC}  (from any device on your tailnet)\n" "${TS_IP:-<tailscale-ip>}" "$PORT"
+        echo ""
+        printf "  ${YELLOW}Note:${NC} Tailscale mode binds all interfaces, so the dashboard is also\n"
+        echo "  reachable from this Mac's local network (e.g. home Wi-Fi) — not just the"
+        echo "  tailnet. Fine on a network you trust; worth knowing on one you don't."
+    else
+        printf "    ${CYAN}http://localhost:%s${NC}\n" "$PORT"
+    fi
 fi
 echo ""
 printf "  ${YELLOW}Remember:${NC} Set an Anthropic spend cap at console.anthropic.com\n"
