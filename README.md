@@ -178,8 +178,9 @@ bash mac-install.sh --hosted
 That runs the normal Mac install, and then does the three things the hosted app
 requires:
 
-1. **Installs Tailscale and signs you in** — the hosted page and your Mac reach
-   each other over your tailnet. Nothing is exposed to the public internet.
+1. **Installs Tailscale and walks you through signing in** — the hosted page and
+   your Mac reach each other over your tailnet. Nothing is exposed to the public
+   internet. You can decline, and the script tells you what's left unfinished.
 2. **Issues a Tailscale HTTPS certificate for this Mac.** The hosted page is
    served over HTTPS, so the browser blocks it from calling a plain `http://`
    server. Tailscale issues a real certificate for the machine's MagicDNS name
@@ -195,10 +196,25 @@ Certificates** at [login.tailscale.com/admin/dns](https://login.tailscale.com/ad
 The script waits and re-checks if either is missing, so you can flip them mid-run.
 
 At the end it fetches `/api/status` over HTTPS at the MagicDNS name and confirms
-the server reports `hostedWebOriginTrusted: true` — so a clean finish means the
-hosted app really can connect, not just that the install completed. Then open
-`https://agents.okthink.ai` from any device on your tailnet and enter the
-MagicDNS name it printed (no scheme, no port — the app adds `https://` and 4801).
+the server reports `hostedWebOriginTrusted: true`, so a successful finish means
+the hosted app really can connect rather than just that the install ran. If a
+step was skipped, the summary says the setup is unfinished and lists what's left
+instead of handing you an address that won't work.
+
+Then open `https://agents.okthink.ai` from any device on your tailnet and enter
+the MagicDNS name it printed — no scheme, no port, the app adds `https://` and
+4801.
+
+**Your browser will ask for local network access the first time.** Something
+like "agents.okthink.ai wants to find and connect to devices on your local
+network". Allow it. The hosted page has no backend, so its first act is to
+connect straight to your Mac at a Tailscale address, and browsers treat that
+address range as local network rather than public — the prompt is that request.
+Blocking it fails the connection with an error that doesn't mention the
+permission, and the prompt doesn't come back on its own: you have to clear the
+site's local network permission in browser settings and reload. Worth knowing
+that allowing it lets that origin reach local addresses generally, not only this
+one machine.
 
 **Notes**
 
@@ -211,8 +227,14 @@ MagicDNS name it printed (no scheme, no port — the app adds `https://` and 480
 - Trusting the hosted origin gives any page from `agents.okthink.ai` the same
   API access as your tailnet. Undo it by deleting `CM_ALLOW_HOSTED_WEB_ORIGIN`
   from the checkout's `.env` and restarting; the app shows whether it's on.
-- Re-running with `--tailscale` or `--localhost` switches back cleanly — each
-  mode clears the flags it doesn't use.
+- Re-running with `--tailscale` or `--localhost` clears the flags hosted mode
+  set, but leaves the certificate in place — the server picks HTTPS from the
+  certificate alone, so it keeps serving HTTPS after the switch. The script
+  reports the scheme it will actually serve; delete the checkout's `.certs`
+  directory and restart to go back to plain HTTP.
+- If a server is already running when you re-run the script, it started before
+  the settings and certificate this run produced, so the script offers to
+  restart it. Decline and remote access keeps using the old configuration.
 
 ## Demo Box — a cheap instance guests can play with
 
