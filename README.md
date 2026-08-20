@@ -158,6 +158,8 @@ This will:
 
 It won't clobber an existing checkout, `.env` files, or your Claude Code settings, and the same `GH_TOKEN` / `PORT` env vars apply.
 
+**Re-runs are cheap.** The first run records the commit it built. Later runs skip the dependency install and the frontend export when the checkout is still on that commit with the build output intact — so if a run stalls at Tailscale sign-in or a failed certificate, starting over costs seconds rather than another few minutes. Everything else still re-applies, including the access mode, so switching modes works without a rebuild. Pass `--rebuild` to force both, and note that local edits to the checkout also force them, since the recorded commit no longer describes what's there.
+
 ## Hosted Web App
 
 `https://agents.okthink.ai` is the Agent Manager frontend, hosted. It is a static
