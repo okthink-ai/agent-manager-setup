@@ -8,7 +8,7 @@
 #   3. Installs system packages, NVM, Node.js 22
 #   4. Installs Tailscale (interactive, or TS_AUTHKEY for non-interactive)
 #   5. Installs GitHub CLI and authenticates (interactive, or GH_TOKEN)
-#   6. Installs the AI coding agents you choose — Claude Code, Codex, Gemini, Pi
+#   6. Installs the AI coding agents you choose — Claude Code, Codex, Antigravity, Pi
 #   7. Clones Agent Manager and installs dependencies — all as the non-root user
 #   8. Prints a summary with access URLs
 #
@@ -252,6 +252,19 @@ install_npm_cli() {
     return 0
 }
 
+install_antigravity() {
+    if run_as_user 'command -v agy >/dev/null 2>&1 || [ -x "$HOME/.local/bin/agy" ]'; then
+        ok "Antigravity CLI already installed"
+    elif run_as_user "bash -o pipefail -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash'"; then
+        ok "Antigravity CLI installed"
+    else
+        warn "Antigravity CLI install failed — skipping. Install later as $NEW_USER with: curl -fsSL https://antigravity.google/cli/install.sh | bash"
+        return 0
+    fi
+    echo "    auth: run 'agy' and sign in with Google, or configure GEMINI_API_KEY"
+    return 0
+}
+
 # ─── Switchover announcement ─────────────────────────────────────────
 
 section "Switching to user '$NEW_USER'"
@@ -420,7 +433,7 @@ ok "Git configured: $GIT_NAME <$GIT_EMAIL>"
 
 section "7/8  Claude Code"
 
-echo "  Agent Manager can drive Claude Code, Codex, Gemini, or Pi — install any"
+echo "  Agent Manager can drive Claude Code, Codex, Antigravity, or Pi — install any"
 echo "  combination (Claude Code is the default; the others are offered next)."
 echo ""
 
@@ -490,9 +503,8 @@ read -rp "Install OpenAI Codex CLI? (y/n): " WANT_CODEX
 [[ "$WANT_CODEX" =~ ^[Yy] ]] && install_npm_cli codex "@openai/codex" "Codex CLI" \
     "run 'codex' and sign in, or set OPENAI_API_KEY"
 
-read -rp "Install Google Gemini CLI? (y/n): " WANT_GEMINI
-[[ "$WANT_GEMINI" =~ ^[Yy] ]] && install_npm_cli gemini "@google/gemini-cli" "Gemini CLI" \
-    "run 'gemini' and sign in with Google, or set GEMINI_API_KEY"
+read -rp "Install Google Antigravity CLI? (y/n): " WANT_ANTIGRAVITY
+[[ "$WANT_ANTIGRAVITY" =~ ^[Yy] ]] && install_antigravity
 
 read -rp "Install Pi coding agent (pi.dev)? (y/n): " WANT_PI
 [[ "$WANT_PI" =~ ^[Yy] ]] && install_npm_cli pi "@earendil-works/pi-coding-agent" "Pi coding agent" \
@@ -501,7 +513,7 @@ read -rp "Install Pi coding agent (pi.dev)? (y/n): " WANT_PI
 # Agent Manager needs at least one agent CLI to drive. Check what's actually on
 # the user's PATH (covers pre-installed agents too), and warn — don't abort — if
 # none is.
-if ! run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && { command -v claude || command -v codex || command -v gemini || command -v pi; }' &>/dev/null; then
+if ! run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && { command -v claude || command -v codex || command -v agy || [ -x "$HOME/.local/bin/agy" ] || command -v pi; }' &>/dev/null; then
     warn "No AI coding agent is installed. Agent Manager will run, but sessions"
     warn "won't work until you install one — re-run this script and answer yes to"
     warn "an agent (it also configures settings and walks you through auth)."

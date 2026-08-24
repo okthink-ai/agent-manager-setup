@@ -138,8 +138,8 @@ use actually needs.
    - Print auth instructions (`claude --dangerously-skip-permissions`) — but no
      second-terminal/SSH copy-paste block; this runs on the box you're already on.
 
-6. **Optional other CLIs** — Codex / Gemini / Pi prompts, reusing the
-   `install_npm_cli` helper from `setup.sh` (each sources NVM before `npm -g`).
+6. **Optional other CLIs** — Codex / Antigravity / Pi prompts, reusing the
+   helpers from `setup.sh` (npm for Codex/Pi and Google's installer for Antigravity).
 
 7. **Clone + build Agent Manager**
    - Clone the repo into `INSTALL_DIR` if it isn't already a checkout;

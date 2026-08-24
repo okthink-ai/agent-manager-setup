@@ -75,7 +75,7 @@ This will:
 - Create a non-root user and harden SSH
 - Install fail2ban, NVM, Node.js 22, Tailscale
 - Authenticate with GitHub (supports secondary accounts)
-- Install the AI coding agents you choose — Claude Code (recommended), Codex, Gemini, and/or Pi
+- Install the AI coding agents you choose — Claude Code (recommended), Codex, Antigravity, and/or Pi
 - **Switch to the non-root user** for all application work
 - Clone and install Agent Manager
 - Build the frontend for production
@@ -113,7 +113,7 @@ This will:
 - Install any missing base packages (skipping ones you already have)
 - Install NVM + Node.js 22
 - Install GitHub CLI and authenticate (interactive, or via `GH_TOKEN`)
-- Install the AI coding agents you choose — Claude Code, Codex, Gemini, and/or Pi
+- Install the AI coding agents you choose — Claude Code, Codex, Antigravity, and/or Pi
 - Clone Agent Manager into a directory you choose and build it
 - Ask where your projects live and preconfigure the dashboard's project list (changeable anytime in Settings)
 - Optionally start the server in a tmux session
@@ -143,7 +143,7 @@ This will:
 - Check Homebrew and install any missing base tools (git, tmux, gh)
 - Install NVM + Node.js 22
 - Authenticate GitHub CLI (interactive, or via `GH_TOKEN`)
-- Install the AI coding agents you choose — Claude Code, Codex, Gemini, and/or Pi
+- Install the AI coding agents you choose — Claude Code, Codex, Antigravity, and/or Pi
 - Clone Agent Manager into a directory you choose and build it (prod mode)
 - Ask where your projects live and preconfigure the dashboard's project list (changeable anytime in Settings)
 - Optionally start the server in a tmux session
@@ -285,7 +285,7 @@ They open `http://<demo-box-tailscale-ip>:4801` and can browse sessions, launch 
 
 ## Choosing Your Agents
 
-All three installers offer the same agent menu. Claude Code is offered first (recommended, default yes) but not mandatory — decline it and drive Agent Manager with another agent instead. Next come [OpenAI Codex](https://developers.openai.com/codex/cli) (`@openai/codex`), [Google Gemini CLI](https://www.npmjs.com/package/@google/gemini-cli) (`@google/gemini-cli`), and [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). Install whichever you have accounts/keys for — each prints its own auth hint, a failed install is skipped rather than fatal, and the script warns if you end up with no agent at all.
+All three installers offer the same agent menu. Claude Code is offered first (recommended, default yes) but not mandatory — decline it and drive Agent Manager with another agent instead. Next come [OpenAI Codex](https://developers.openai.com/codex/cli) (`@openai/codex`), [Google Antigravity](https://antigravity.google/docs/cli/install/) (`agy`), and [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). Install whichever you have accounts/keys for — each prints its own auth hint, a failed install is skipped rather than fatal, and the script warns if you end up with no agent at all.
 
 ## Requirements
 
@@ -322,7 +322,7 @@ Prices and exact type availability change over time — the script always reads 
 | Node.js 22 (via NVM) | Runtime for Agent Manager | All |
 | GitHub CLI | Authenticate with GitHub for private package access | All |
 | Claude Code | The CLI tool that Agent Manager monitors | All (on request) |
-| Codex / Gemini / Pi CLIs | Optional — other terminal coding agents | All (on request) |
+| Codex / Antigravity / Pi CLIs | Optional — other terminal coding agents | All (on request) |
 | tmux | Session persistence for long-running processes | All |
 | Tailscale | Private networking — access the dashboard without exposing ports | Hetzner VPS; Mac (optional) |
 | fail2ban | SSH brute-force protection | Hetzner VPS only |
