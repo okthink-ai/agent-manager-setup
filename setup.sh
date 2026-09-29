@@ -24,12 +24,34 @@
 #                 can be scoped by ACL to the dashboard port only.
 #   GH_TOKEN    — GitHub PAT with repo + read:packages (skips the browser login)
 #   SSH_ALIAS   — the Host alias provisioning wrote to your laptop's SSH config
-#                 (default agent-manager-vps; demo boxes use agent-manager-demo).
+#                 (default agent-manager-vps, or linux-vps with --no-app; demo
+#                 boxes use agent-manager-demo).
 #                 Only affects the printed summary.
+#
+# Usage: bash setup.sh [--no-app]
+#   --no-app  Set up the machine only (user, SSH hardening, fail2ban, Node,
+#             Tailscale, GitHub CLI, AI coding CLIs) and skip step 8 — no
+#             Agent Manager checkout, build, or server.
 #
 # Designed to be idempotent — safe to re-run after a failure.
 #
 set -euo pipefail
+
+NO_APP=false
+for arg in "$@"; do
+    case "$arg" in
+        --no-app) NO_APP=true ;;
+        -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) printf 'Unknown option: %s (try --help)\n' "$arg" >&2; exit 1 ;;
+    esac
+done
+# Absolute path for re-run hints — provision.sh puts this script in /root, which
+# isn't the new user's working directory once root SSH is disabled.
+SCRIPT_PATH="$(readlink -f "$0")"
+
+# Machine-only runs have no step 8, so the section counters read N/7.
+TOTAL_STEPS=8
+[[ "$NO_APP" == true ]] && TOTAL_STEPS=7
 
 # Colors
 RED='\033[0;31m'
@@ -56,7 +78,7 @@ section() {
 
 if [[ $EUID -ne 0 ]]; then
     err "This script must be run as root."
-    err "If root SSH is disabled, connect as your user and run: sudo bash setup.sh"
+    err "If root SSH is disabled, connect as your user and run: sudo bash $SCRIPT_PATH"
     exit 1
 fi
 
@@ -84,12 +106,20 @@ read -rp "Git email (for commits): " GIT_EMAIL
 # written to .env in step 8. The UI's Settings panel (stored in the DB) takes
 # priority over the seeded value, so don't re-ask if a previous run seeded it.
 CODE_DIRS_INPUT=""
-if ! grep -q '^CODE_DIRS=' "/home/$NEW_USER/dev/claude-manager/.env" 2>/dev/null; then
+if [[ "$NO_APP" == false ]] && ! grep -q '^CODE_DIRS=' "/home/$NEW_USER/dev/claude-manager/.env" 2>/dev/null; then
     DEFAULT_CODE_DIRS="/home/$NEW_USER/dev"
     read -rp "Projects directory to show in Agent Manager (first-run default) [$DEFAULT_CODE_DIRS]: " CODE_DIRS_INPUT
     CODE_DIRS_INPUT="${CODE_DIRS_INPUT:-$DEFAULT_CODE_DIRS}"
     # A leading ~ means the app user's home, not root's.
     CODE_DIRS_INPUT="${CODE_DIRS_INPUT/#\~//home/$NEW_USER}"
+fi
+
+# Agent Manager needs GitHub (checkout + GitHub Packages). A machine-only box
+# doesn't, so let people keep GitHub credentials off it. A GH_TOKEN counts as yes.
+WANT_GH=y
+if [[ "$NO_APP" == true && -z "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]]; then
+    read -rp "Sign in to GitHub on this box (gh auth + git credential helper)? (Y/n): " WANT_GH
+    WANT_GH="${WANT_GH:-y}"
 fi
 
 REPO_URL="https://github.com/okthink-ai/claude-manager.git"
@@ -105,8 +135,10 @@ GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 
 # SSH alias the completion summary tells you to edit/use on your laptop.
 # provision.sh writes agent-manager-vps for production, agent-manager-demo
-# for --demo boxes.
-SSH_ALIAS="${SSH_ALIAS:-agent-manager-vps}"
+# for --demo boxes, and linux-vps for --no-app boxes.
+DEFAULT_SSH_ALIAS="agent-manager-vps"
+[[ "$NO_APP" == true ]] && DEFAULT_SSH_ALIAS="linux-vps"
+SSH_ALIAS="${SSH_ALIAS:-$DEFAULT_SSH_ALIAS}"
 
 # Extra args for tailscale up. --advertise-tags requires the tag to be declared
 # in the tailnet ACL's tagOwners — see the README's Demo Box section.
@@ -115,13 +147,14 @@ TS_UP_ARGS=()
 
 echo ""
 info "Will create user '$NEW_USER' and install everything under /home/$NEW_USER"
+[[ "$NO_APP" == true ]] && info "Machine-only setup (--no-app) — Agent Manager will not be installed"
 [[ -n "$TS_AUTHKEY" ]] && ok "Tailscale auth key detected — will connect non-interactively"
 [[ -n "$GH_TOKEN" ]]   && ok "GitHub token detected — will authenticate non-interactively"
 echo ""
 
 # ─── 1. System update + packages ─────────────────────────────────────
 
-section "1/8  System Update & Packages"
+section "1/$TOTAL_STEPS  System Update & Packages"
 
 info "Updating apt and installing base packages..."
 apt update && apt upgrade -y
@@ -143,7 +176,7 @@ ok "System packages installed"
 
 # ─── 2. Create non-root user ─────────────────────────────────────────
 
-section "2/8  Create User & Harden SSH"
+section "2/$TOTAL_STEPS  Create User & Harden SSH"
 
 if id "$NEW_USER" &>/dev/null; then
     ok "User '$NEW_USER' already exists"
@@ -192,11 +225,11 @@ PasswordAuthentication no
 EOF
 systemctl restart ssh
 ok "SSH hardened — root login disabled."
-info "If you need to re-run this script, SSH as $NEW_USER and use: sudo bash setup.sh"
+info "If you need to re-run this script, SSH as $NEW_USER and use: sudo bash $SCRIPT_PATH"
 
 # ─── 3. Fail2ban ─────────────────────────────────────────────────────
 
-section "3/8  Fail2ban"
+section "3/$TOTAL_STEPS  Fail2ban"
 
 if systemctl is-active --quiet fail2ban 2>/dev/null; then
     ok "Fail2ban is already running"
@@ -255,14 +288,19 @@ install_npm_cli() {
 # ─── Switchover announcement ─────────────────────────────────────────
 
 section "Switching to user '$NEW_USER'"
-echo "  Root-level system setup is done. Everything below — Node, GitHub/AI"
-echo "  auth, the Agent Manager checkout, the build, and the running server —"
-echo "  now happens as '$NEW_USER', not root. (apt installs and 'tailscale up'"
-echo "  still use root where the OS requires it.)"
+if [[ "$NO_APP" == true ]]; then
+    echo "  Root-level system setup is done. Everything below — Node, GitHub/AI"
+    echo "  auth, and the coding CLIs — now happens as '$NEW_USER', not root."
+else
+    echo "  Root-level system setup is done. Everything below — Node, GitHub/AI"
+    echo "  auth, the Agent Manager checkout, the build, and the running server —"
+    echo "  now happens as '$NEW_USER', not root."
+fi
+echo "  (apt installs and 'tailscale up' still use root where the OS requires it.)"
 
 # ─── 4. NVM + Node.js ────────────────────────────────────────────────
 
-section "4/8  NVM & Node.js 22"
+section "4/$TOTAL_STEPS  NVM & Node.js 22"
 
 if run_as_user "command -v node" &>/dev/null; then
     NODE_VERSION=$(run_as_user "node --version")
@@ -280,7 +318,7 @@ fi
 
 # ─── 5. Tailscale ────────────────────────────────────────────────────
 
-section "5/8  Tailscale"
+section "5/$TOTAL_STEPS  Tailscale"
 
 if command -v tailscale &>/dev/null && tailscale status &>/dev/null; then
     TAILSCALE_IP=$(tailscale ip -4)
@@ -327,79 +365,95 @@ fi
 
 # ─── 6. GitHub CLI + auth ────────────────────────────────────────────
 
-section "6/8  GitHub CLI & Authentication"
+section "6/$TOTAL_STEPS  GitHub CLI & Authentication"
 
 if ! command -v gh &>/dev/null; then
     info "Installing GitHub CLI..."
     apt install -y gh
 fi
 
-# Check if already authenticated
-if run_as_user "gh auth status" &>/dev/null; then
-    ok "GitHub CLI already authenticated"
-elif [[ -n "$GH_TOKEN" ]]; then
-    info "Authenticating with GitHub using the provided token (non-interactive)..."
-    # Hand the token to gh via a user-owned temp file so it never appears in a
-    # command line / process list (ps), only on disk briefly with 0600 perms.
-    GH_TOKEN_FILE=$(mktemp)
-    chmod 600 "$GH_TOKEN_FILE"
-    printf '%s\n' "$GH_TOKEN" > "$GH_TOKEN_FILE"
-    chown "$NEW_USER:$NEW_USER" "$GH_TOKEN_FILE"
-    # Remove the token file whether the login succeeds or fails — testing the
-    # result inside `if` keeps set -e from aborting before we can clean up.
-    if run_as_user "gh auth login --with-token < $GH_TOKEN_FILE"; then
-        rm -f "$GH_TOKEN_FILE"
-        ok "GitHub authenticated via token"
+if [[ ! "$WANT_GH" =~ ^[Yy] ]]; then
+    warn "Skipping GitHub sign-in — run 'gh auth login' as $NEW_USER later if you need it."
+else
+    # Check if already authenticated
+    if run_as_user "gh auth status" &>/dev/null; then
+        ok "GitHub CLI already authenticated"
+    elif [[ -n "$GH_TOKEN" ]]; then
+        info "Authenticating with GitHub using the provided token (non-interactive)..."
+        # Hand the token to gh via a user-owned temp file so it never appears in a
+        # command line / process list (ps), only on disk briefly with 0600 perms.
+        GH_TOKEN_FILE=$(mktemp)
+        chmod 600 "$GH_TOKEN_FILE"
+        printf '%s\n' "$GH_TOKEN" > "$GH_TOKEN_FILE"
+        chown "$NEW_USER:$NEW_USER" "$GH_TOKEN_FILE"
+        # Remove the token file whether the login succeeds or fails — testing the
+        # result inside `if` keeps set -e from aborting before we can clean up.
+        if run_as_user "gh auth login --with-token < $GH_TOKEN_FILE"; then
+            rm -f "$GH_TOKEN_FILE"
+            ok "GitHub authenticated via token"
+        else
+            rm -f "$GH_TOKEN_FILE"
+            err "GitHub token authentication failed."
+            err "Check the token is valid and has repo + read:packages scopes."
+            exit 1
+        fi
     else
-        rm -f "$GH_TOKEN_FILE"
-        err "GitHub token authentication failed."
-        err "Check the token is valid and has repo + read:packages scopes."
-        exit 1
+        if [[ "$NO_APP" == true ]]; then
+            echo "  Sign in with the GitHub account this server should use for git."
+            echo "  A secondary account works too if you'd rather limit access here."
+        else
+            echo "  Agent Manager needs read access to the okthink-ai GitHub repos."
+            echo "  You can use your main GitHub account, or a secondary account"
+            echo "  if you prefer to limit access on this server."
+        fi
+        echo ""
+        echo "  This is a headless server with no browser. gh will print a one-time"
+        echo "  code and a URL — open the URL ON YOUR LAPTOP, enter the code, and make"
+        echo "  sure you're signed into the right GitHub account before approving."
+        echo "  (To skip this step entirely, re-run with GH_TOKEN=<your PAT> set.)"
+        echo ""
+        info "Authenticating with GitHub..."
+        echo ""
+        # No GUI browser here, so xdg-open just errors out. Point gh's browser at
+        # `echo` instead — it prints the auth URL for you to open on your laptop.
+        run_as_user "BROWSER=echo gh auth login -p ssh"
+        echo ""
     fi
-else
-    echo "  Agent Manager needs read access to the okthink-ai GitHub repos."
-    echo "  You can use your main GitHub account, or a secondary account"
-    echo "  if you prefer to limit access on this server."
-    echo ""
-    echo "  This is a headless server with no browser. gh will print a one-time"
-    echo "  code and a URL — open the URL ON YOUR LAPTOP, enter the code, and make"
-    echo "  sure you're signed into the right GitHub account before approving."
-    echo "  (To skip this step entirely, re-run with GH_TOKEN=<your PAT> set.)"
-    echo ""
-    info "Authenticating with GitHub..."
-    echo ""
-    # No GUI browser here, so xdg-open just errors out. Point gh's browser at
-    # `echo` instead — it prints the auth URL for you to open on your laptop.
-    run_as_user "BROWSER=echo gh auth login -p ssh"
-    echo ""
-fi
 
-# Ensure read:packages scope. OAuth logins can refresh to add it; a PAT carries
-# its own scopes, so we only refresh when we didn't authenticate with a token.
-if [[ -n "$GH_TOKEN" ]]; then
-    info "Using the token's existing scopes (PAT must include repo + read:packages)."
-else
-    # `gh auth refresh` only works for web/OAuth logins. If this box was
-    # previously authenticated with a token (and GH_TOKEN just isn't exported
-    # this run), the refresh errors out — don't let that abort the whole script.
-    # The PAT already carries its own scopes, so warn and continue instead.
-    info "Ensuring read:packages scope..."
-    if ! run_as_user "gh auth refresh -h github.com -s read:packages"; then
-        warn "Couldn't refresh scopes (expected for token-based logins) — continuing."
-        warn "If npm install hits a 403 later, make sure your login has repo + read:packages."
+    # Ensure read:packages scope. OAuth logins can refresh to add it; a PAT carries
+    # its own scopes, so we only refresh when we didn't authenticate with a token.
+    # Only Agent Manager's npm install needs it, so machine-only runs skip it.
+    if [[ "$NO_APP" == true ]]; then
+        :
+    elif [[ -n "$GH_TOKEN" ]]; then
+        info "Using the token's existing scopes (PAT must include repo + read:packages)."
+    else
+        # `gh auth refresh` only works for web/OAuth logins. If this box was
+        # previously authenticated with a token (and GH_TOKEN just isn't exported
+        # this run), the refresh errors out — don't let that abort the whole script.
+        # The PAT already carries its own scopes, so warn and continue instead.
+        info "Ensuring read:packages scope..."
+        if ! run_as_user "gh auth refresh -h github.com -s read:packages"; then
+            warn "Couldn't refresh scopes (expected for token-based logins) — continuing."
+            warn "If npm install hits a 403 later, make sure your login has repo + read:packages."
+        fi
     fi
-fi
 
-# Wire gh as git credential helper (needed for HTTPS git-URL deps in package.json)
-info "Setting up git credential helper..."
-run_as_user "gh auth setup-git"
+    # Wire gh as git credential helper (needed for HTTPS git-URL deps in package.json)
+    info "Setting up git credential helper..."
+    run_as_user "gh auth setup-git"
 
-# Export GITHUB_TOKEN in .bashrc (needed for npm registry auth via .npmrc)
-if ! run_as_user "grep -q 'GITHUB_TOKEN' ~/.bashrc" 2>/dev/null; then
-    run_as_user 'echo '\''export GITHUB_TOKEN=$(gh auth token)'\'' >> ~/.bashrc'
-    ok "GITHUB_TOKEN added to .bashrc"
-else
-    ok "GITHUB_TOKEN already in .bashrc"
+    # Export GITHUB_TOKEN in .bashrc (needed for npm registry auth via .npmrc).
+    # Machine-only runs have no app to npm install, so don't put the token in
+    # every shell's environment.
+    if [[ "$NO_APP" == true ]]; then
+        :
+    elif ! run_as_user "grep -q 'GITHUB_TOKEN' ~/.bashrc" 2>/dev/null; then
+        run_as_user 'echo '\''export GITHUB_TOKEN=$(gh auth token)'\'' >> ~/.bashrc'
+        ok "GITHUB_TOKEN added to .bashrc"
+    else
+        ok "GITHUB_TOKEN already in .bashrc"
+    fi
 fi
 
 # Git identity — write to a temp script to avoid shell-quoting issues
@@ -418,10 +472,14 @@ ok "Git configured: $GIT_NAME <$GIT_EMAIL>"
 
 # ─── 7. Claude Code (optional, recommended) ──────────────────────────
 
-section "7/8  Claude Code"
+section "7/$TOTAL_STEPS  Claude Code"
 
-echo "  Agent Manager can drive Claude Code, Codex, Gemini, or Pi — install any"
-echo "  combination (Claude Code is the default; the others are offered next)."
+if [[ "$NO_APP" == true ]]; then
+    echo "  Claude Code is the default; Codex, Gemini, and Pi are offered next."
+else
+    echo "  Agent Manager can drive Claude Code, Codex, Gemini, or Pi — install any"
+    echo "  combination (Claude Code is the default; the others are offered next)."
+fi
 echo ""
 
 WANT_CLAUDE=y
@@ -440,7 +498,13 @@ else
     fi
 fi
 
-if [[ "$WANT_CLAUDE" =~ ^[Yy] ]]; then
+# Agent Manager launches sessions with --dangerously-skip-permissions, so app
+# installs pre-accept that mode's warning. A machine-only box has no such
+# launcher — leave Claude Code's defaults alone and suggest plain `claude`.
+CLAUDE_CMD="claude --dangerously-skip-permissions"
+[[ "$NO_APP" == true ]] && CLAUDE_CMD="claude"
+
+if [[ "$WANT_CLAUDE" =~ ^[Yy] && "$NO_APP" == false ]]; then
     # Skip the YOLO-mode consent prompt
     CLAUDE_SETTINGS="/home/$NEW_USER/.claude/settings.json"
     if [[ -f "$CLAUDE_SETTINGS" ]]; then
@@ -463,16 +527,22 @@ EOF
         chmod 700 "/home/$NEW_USER/.claude"
         ok "Claude Code settings configured"
     fi
+fi
 
+if [[ "$WANT_CLAUDE" =~ ^[Yy] ]]; then
     echo ""
     info "Claude Code needs to authenticate. In a separate terminal on your laptop:"
     echo ""
     printf "  ${CYAN}ssh -i ~/.ssh/agent_manager %s@%s${NC}\n" "$NEW_USER" "$(hostname -I | awk '{print $1}')"
-    printf "  ${CYAN}claude --dangerously-skip-permissions${NC}\n"
+    printf "  ${CYAN}%s${NC}\n" "$CLAUDE_CMD"
     echo ""
-    echo "  Using --dangerously-skip-permissions lets Claude Code run without"
-    echo "  permission prompts, which is how Agent Manager launches sessions."
-    echo "  Follow the OAuth URL, accept the YOLO-mode prompt, then /exit."
+    if [[ "$NO_APP" == true ]]; then
+        echo "  Follow the OAuth URL, then /exit."
+    else
+        echo "  Using --dangerously-skip-permissions lets Claude Code run without"
+        echo "  permission prompts, which is how Agent Manager launches sessions."
+        echo "  Follow the OAuth URL, accept the YOLO-mode prompt, then /exit."
+    fi
     echo ""
     read -rp "  Press Enter after authenticating Claude Code (or Enter to skip)... "
 fi
@@ -481,7 +551,7 @@ fi
 
 section "Optional: Other AI Coding CLIs"
 
-echo "  Agent Manager can drive other terminal coding agents too. Install any"
+echo "  Other terminal coding agents are optional. Install any"
 echo "  you have accounts or API keys for — skip the rest, you can add them later."
 echo "  Each still needs its own auth (shown after install)."
 echo ""
@@ -500,16 +570,20 @@ read -rp "Install Pi coding agent (pi.dev)? (y/n): " WANT_PI
 
 # Agent Manager needs at least one agent CLI to drive. Check what's actually on
 # the user's PATH (covers pre-installed agents too), and warn — don't abort — if
-# none is.
-if ! run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && { command -v claude || command -v codex || command -v gemini || command -v pi; }' &>/dev/null; then
+# none is. Machine-only runs don't need one.
+if [[ "$NO_APP" == false ]] && ! run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && { command -v claude || command -v codex || command -v gemini || command -v pi; }' &>/dev/null; then
     warn "No AI coding agent is installed. Agent Manager will run, but sessions"
     warn "won't work until you install one — re-run this script and answer yes to"
     warn "an agent (it also configures settings and walks you through auth)."
 fi
 
+# Machine-only runs (--no-app) skip the checkout, build, and server start.
+START_NOW=n
+if [[ "$NO_APP" == false ]]; then
+
 # ─── 8. Clone Agent Manager ──────────────────────────────────────────
 
-section "8/8  Clone & Install Agent Manager"
+section "8/$TOTAL_STEPS  Clone & Install Agent Manager"
 
 INSTALL_DIR="/home/$NEW_USER/dev/claude-manager"
 
@@ -653,6 +727,8 @@ if [[ "$START_NOW" =~ ^[Yy] ]]; then
     fi
 fi
 
+fi
+
 # ─── Done ─────────────────────────────────────────────────────────────
 
 TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "<tailscale-ip>")
@@ -661,7 +737,7 @@ section "Setup Complete!"
 
 printf "  ${GREEN}User:${NC}        %s\n" "$NEW_USER"
 printf "  ${GREEN}Tailscale:${NC}   %s\n" "$TAILSCALE_IP"
-printf "  ${GREEN}App dir:${NC}     %s\n" "$INSTALL_DIR"
+[[ "$NO_APP" == false ]] && printf "  ${GREEN}App dir:${NC}     %s\n" "$INSTALL_DIR"
 echo ""
 STEP=1
 
@@ -673,7 +749,9 @@ printf "     ${CYAN}Host %s\n" "$SSH_ALIAS"
 printf "         User %s${NC}\n" "$NEW_USER"
 STEP=$((STEP + 1))
 
-if [[ "$START_NOW" =~ ^[Yy] ]]; then
+if [[ "$NO_APP" == true ]]; then
+    :
+elif [[ "$START_NOW" =~ ^[Yy] ]]; then
     echo ""
     printf "  ${STEP}. Agent Manager is running. Access it at:\n"
     echo ""
@@ -704,7 +782,7 @@ if [[ "$WANT_CLAUDE" =~ ^[Yy] ]]; then
     printf "  ${STEP}. Start a Claude Code session in tmux:\n"
     echo ""
     printf "     ${CYAN}tmux new-session -d -s my-project -c ~/dev/my-project${NC}\n"
-    printf "     ${CYAN}tmux send-keys -t my-project 'claude --dangerously-skip-permissions' Enter${NC}\n"
+    printf "     ${CYAN}tmux send-keys -t my-project '%s' Enter${NC}\n" "$CLAUDE_CMD"
     echo ""
 fi
 printf "  ${YELLOW}Remember:${NC} Set an Anthropic spend cap at console.anthropic.com\n"

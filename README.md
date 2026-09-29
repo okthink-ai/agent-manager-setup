@@ -21,6 +21,7 @@ Setup scripts for installing [Agent Manager](https://github.com/okthink-ai/claud
 | Where will Agent Manager run? | Use | Run it |
 |-------------------------------|-----|--------|
 | A **new Hetzner VPS** (we create it for you) | `provision.sh` → `setup.sh` | On your laptop, then on the new server |
+| A **new Hetzner VPS** as a plain Linux box — no Agent Manager | `provision.sh --no-app` → `setup.sh --no-app` | On your laptop, then on the new server — see [Machine-Only VPS](#machine-only-vps--no-agent-manager) |
 | An **Ubuntu server you already own** | `ubuntu-install.sh` | On the server |
 | **Your Mac** | `mac-install.sh` | On the Mac |
 | **Your Mac**, reached from the hosted app at `agents.okthink.ai` | `mac-install.sh --hosted` | On the Mac — see [Hosted Web App](#hosted-web-app) |
@@ -99,6 +100,31 @@ http://<tailscale-ip>:4801
 ```
 
 The dashboard is only reachable over your Tailscale network — nothing is exposed to the public internet.
+
+## Machine-Only VPS — No Agent Manager
+
+Want the hardened Hetzner box without the app? Pass `--no-app` to both scripts:
+
+```bash
+bash provision.sh --no-app                      # on your laptop
+ssh linux-vps
+SSH_ALIAS=linux-vps bash setup.sh --no-app      # on the server
+```
+
+`provision.sh --no-app` builds the same spec and firewall rules as the production box, under its own names: server `linux-vps`, SSH alias `linux-vps`, firewall `linux-vps-firewall`. It coexists with an Agent Manager VPS in the same Hetzner project instead of offering to reuse or delete it. It can't be combined with `--demo`.
+
+`setup.sh --no-app` runs steps 1–7: the non-root user and SSH hardening, fail2ban, NVM and Node.js 22, Tailscale, git identity, GitHub CLI, and whichever AI coding CLIs you pick. It skips everything that's only for the app: the projects-directory prompt, the `read:packages` scope, the `GITHUB_TOKEN` export in `.bashrc`, the checkout and build, and the server start. It also differs in two ways:
+
+- **GitHub sign-in is optional.** It asks up front; answer `n` to keep GitHub credentials off the box. Exporting `GH_TOKEN` counts as yes.
+- **Claude Code keeps its defaults.** The app install pre-accepts Claude Code's `--dangerously-skip-permissions` warning because that's how Agent Manager launches sessions. A machine-only box doesn't, and the hints suggest plain `claude`.
+
+To add Agent Manager to the box later, SSH in as your user and re-run the script without the flag. Provisioning put it in root's home:
+
+```bash
+sudo bash /root/setup.sh
+```
+
+It re-runs every step and asks the prompts again (username, SSH check, CLI choices), skipping work that's already done, then clones and builds the app. If you skipped GitHub sign-in earlier, it signs you in now; either way it adds the `read:packages` scope the app's install needs.
 
 ## Quick Start — Existing Ubuntu Server
 
