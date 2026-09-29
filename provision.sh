@@ -8,7 +8,7 @@
 #
 # Either way, it generates an SSH key (if needed), writes ~/.ssh/config, and scp's setup.sh to the server.
 #
-# Usage: bash provision.sh [-y|--bypass-consent] [--demo]
+# Usage: bash provision.sh [-y|--bypass-consent] [--demo] [--no-app]
 #   --bypass-consent  Run unattended — accept every consent prompt and use the
 #                     default choices (suggested location, cheapest server type).
 #   --demo            Provision a cheap demo box instead of a production one:
@@ -16,6 +16,9 @@
 #                     (Ashburn), distinct server + SSH names so it can coexist
 #                     with a production box. Share it with guests via Tailscale
 #                     machine sharing — see the README's Demo Box section.
+#   --no-app          Provision a plain Linux box, not an Agent Manager host:
+#                     distinct server + SSH names (linux-vps) so it can coexist
+#                     with a production box; the next steps run setup.sh --no-app.
 #
 set -euo pipefail
 
@@ -40,6 +43,11 @@ MIN_RAM_GB=8
 # frontend natively and run a couple of guest sessions), the location defaults
 # to the US, and the server/SSH names get a -demo suffix so both boxes coexist.
 DEMO=false
+
+# When true (set by --no-app), provision a plain Linux box: distinct names so
+# it coexists with a production box, and the printed next steps run
+# setup.sh --no-app, which sets up the machine without installing Agent Manager.
+NO_APP=false
 
 # When true (set by -y/--bypass-consent), every consent prompt is auto-accepted
 # and selection prompts use their defaults — for unattended/automated runs.
@@ -92,6 +100,10 @@ Options:
       --demo             Provision a cheap demo box: 2 vCPU / 4 GB floor,
                          defaults to Ashburn (US), named agent-manager-demo.
                          Combine with --location to pick a different region.
+      --no-app           Provision a plain Linux box, named linux-vps so it
+                         coexists with a production box. The next steps run
+                         setup.sh --no-app (user, hardening, Node, Tailscale,
+                         CLIs — no app). Can't be combined with --demo.
   -h, --help             Show this help and exit.
 EOF
 }
@@ -106,11 +118,31 @@ while [[ $# -gt 0 ]]; do
             shift ;;
         --location=*) LOCATION_OVERRIDE="${1#*=}" ;;
         --demo) DEMO=true ;;
+        --no-app) NO_APP=true ;;
         -h|--help) usage; exit 0 ;;
         *) err "Unknown option: $1"; echo "" >&2; usage >&2; exit 1 ;;
     esac
     shift
 done
+
+# A demo box exists for guests to use the dashboard, so it needs the app.
+if [[ "$DEMO" == true && "$NO_APP" == true ]]; then
+    err "--demo and --no-app can't be combined: a demo box runs Agent Manager for guests."
+    exit 1
+fi
+
+# Machine-only mode: same spec floor and firewall rules, distinct names — a
+# production box named agent-manager would otherwise match the existing-server
+# check below, which only offers to reuse it or delete it.
+if [[ "$NO_APP" == true ]]; then
+    SERVER_NAME="linux-vps"
+    SSH_CONFIG_HOST="linux-vps"
+    # Own firewall object for the same reason as the demo box: the stale-rules
+    # self-heal deletes and recreates it, which Hetzner refuses while it's
+    # attached to another server.
+    FIREWALL_NAME="linux-vps-firewall"
+    info "Machine-only mode: server '$SERVER_NAME', SSH alias '$SSH_CONFIG_HOST'"
+fi
 
 # Demo mode: cheaper floor, US default, distinct names. Applied after parsing
 # so an explicit --location still wins over the Ashburn default.
@@ -1072,7 +1104,12 @@ echo "    1. SSH into the server:"
 printf "       ${CYAN}ssh %s${NC}\n" "$SSH_CONFIG_HOST"
 echo ""
 echo "    2. Run the setup script:"
-printf "       ${CYAN}bash setup.sh${NC}\n"
+# setup.sh's summary prints the SSH alias to edit; tell it which one we wrote.
+if [[ "$NO_APP" == true ]]; then
+    printf "       ${CYAN}SSH_ALIAS=%s bash setup.sh --no-app${NC}\n" "$SSH_CONFIG_HOST"
+else
+    printf "       ${CYAN}bash setup.sh${NC}\n"
+fi
 echo ""
 echo "    3. After setup completes, update your SSH config"
 echo "       to use your new username instead of root."
