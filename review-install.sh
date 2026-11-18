@@ -213,6 +213,13 @@ ok "Review settings written to $CONFIG_ENV"
 "$FIREHOSE_BIN" service install
 ok "Firehose starts at boot"
 
+# Git ignores a repository it finds by walking up unless it is a .git folder,
+# so a folder a session writes in the fixture (HEAD, config, objects, refs)
+# cannot make git run that config's hooks or fsmonitor. Firehose sets this
+# for the git it runs in review mode; this covers git run any other way.
+git config --global safe.bareRepository explicit
+ok "Git refuses repositories it was not pointed at"
+
 # `firehose public on` runs Funnel as this user, which Tailscale allows only
 # its operator.
 sudo tailscale set --operator="$USER"
