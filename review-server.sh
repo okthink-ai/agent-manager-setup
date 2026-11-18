@@ -9,8 +9,8 @@
 #   status    Show whether the server is on and its address answers
 #   check     Check the public address from here: the health route answers and
 #             everything else refuses a caller without an access token
-#   snapshot  Save the current review state (database and fixture) as the
-#             known-good baseline that reset returns to
+#   snapshot  Save the current review state (Firehose's data, OpenCode's data,
+#             the fixture) as the known-good baseline that reset returns to
 #   reset     Return the review state to the saved baseline
 #
 # Uses the hcloud context provision.sh saved (or HCLOUD_TOKEN) and the SSH
@@ -25,7 +25,7 @@ set -euo pipefail
 SERVER_NAME="${REVIEW_SERVER_NAME:-firehose-review}"
 SSH_HOST="${REVIEW_SSH_HOST:-firehose-review}"
 REMOTE_FIREHOSE='~/.local/bin/firehose'
-BASELINE_DIR='~/review/baseline'
+BASELINE_DIR='$HOME/review/baseline'
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -43,7 +43,20 @@ need() { command -v "$1" &>/dev/null || { err "$1 is required; provision.sh inst
 
 remote() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$SSH_HOST" "$@"; }
 
-server_status() { hcloud server describe "$SERVER_NAME" -o json 2>/dev/null | jq -r '.status // "missing"'; }
+# The server's status, "missing" when Hetzner has no server by that name. Any
+# other hcloud failure (a bad token, no network) stops the script with its
+# message instead of reading as a missing server.
+server_status() {
+    local out
+    if out=$(hcloud server describe "$SERVER_NAME" -o json 2>&1); then
+        jq -r '.status // "unknown"' <<<"$out"
+    elif grep -qi "not found" <<<"$out"; then
+        echo missing
+    else
+        err "hcloud could not describe $SERVER_NAME: $out"
+        exit 1
+    fi
+}
 
 wait_for_ssh() {
     info "Waiting for SSH..."
@@ -154,29 +167,47 @@ cmd_check() {
     check_public "$(public_origin)"
 }
 
-# Firehose is stopped while the database is copied, so the copy is consistent.
+# The review state is everything a session can change: Firehose's data
+# directory (database, uploads, attachments), OpenCode's data (its sessions
+# and snapshots), and the fixture project. Firehose is stopped while it is
+# copied, so the copy is consistent (stopping the service also ends its agent
+# daemon and OpenCode processes), and started again however the copy ends.
+# OpenCode's data holds no login on a review box (review-install.sh refuses
+# one), so it is copied whole.
+STATE_DIRS='$HOME/.firehose/data $HOME/.local/share/opencode'
+
 cmd_snapshot() {
     info "Saving the current review state as the baseline..."
     remote "set -e
-        mkdir -p $BASELINE_DIR
+        trap 'systemctl --user start firehose.service' EXIT
         systemctl --user stop firehose.service
-        cp ~/.firehose/data/agent-manager.db $BASELINE_DIR/agent-manager.db
-        git -C ~/review/fixture tag -f review-baseline >/dev/null
-        systemctl --user start firehose.service"
+        rm -rf $BASELINE_DIR.new && mkdir -p $BASELINE_DIR.new
+        for dir in $STATE_DIRS; do
+            [ -d \"\$dir\" ] || continue
+            mkdir -p \"$BASELINE_DIR.new/\$(basename \"\$dir\")\"
+            cp -a \"\$dir/.\" \"$BASELINE_DIR.new/\$(basename \"\$dir\")/\"
+        done
+        rm -rf $BASELINE_DIR && mv $BASELINE_DIR.new $BASELINE_DIR
+        git -C ~/review/fixture tag -f review-baseline >/dev/null"
     ok "Baseline saved"
 }
 
 cmd_reset() {
     info "Returning the review state to the baseline..."
     remote "set -e
-        test -f $BASELINE_DIR/agent-manager.db || { echo 'No baseline; run review-server.sh snapshot first.' >&2; exit 1; }
+        test -d $BASELINE_DIR/data || { echo 'No baseline; run review-server.sh snapshot first.' >&2; exit 1; }
+        trap 'systemctl --user start firehose.service' EXIT
         systemctl --user stop firehose.service
         tmux kill-server 2>/dev/null || true
-        cp $BASELINE_DIR/agent-manager.db ~/.firehose/data/agent-manager.db
-        rm -f ~/.firehose/data/agent-manager.db-wal ~/.firehose/data/agent-manager.db-shm
+        for dir in $STATE_DIRS; do
+            name=\$(basename \"\$dir\")
+            [ -d \"$BASELINE_DIR/\$name\" ] || continue
+            rm -rf \"\$dir\" && mkdir -p \"\$dir\"
+            cp -a \"$BASELINE_DIR/\$name/.\" \"\$dir/\"
+        done
         git -C ~/review/fixture reset -q --hard review-baseline
-        git -C ~/review/fixture clean -qfdx
-        systemctl --user start firehose.service"
+        git -C ~/review/fixture clean -qffdx
+        rm -rf /tmp/opencode 2>/dev/null || true"
     ok "Review state reset"
 }
 

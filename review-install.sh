@@ -97,12 +97,18 @@ fi
 
 # The reviewer may only use a model that costs nothing. Never guess one: free
 # models and their quotas change, so the choice is revalidated on every install.
+CURRENT_MODEL=$(grep -s '^CM_REVIEW_MODEL=' "$CONFIG_ENV" | tail -1 | cut -d= -f2- || true)
 if [[ -z "${REVIEW_MODEL:-}" ]]; then
     echo ""
     info "Models OpenCode offers here (pick one that is free):"
     opencode models 2>/dev/null | grep -i -- "free" || warn "No model id contains \"free\"; check OpenCode's model list."
     echo ""
-    read -rp "Review model id (e.g. opencode/<model>-free): " REVIEW_MODEL
+    if [[ -n "$CURRENT_MODEL" ]]; then
+        read -rp "Review model id [$CURRENT_MODEL]: " REVIEW_MODEL
+        REVIEW_MODEL="${REVIEW_MODEL:-$CURRENT_MODEL}"
+    else
+        read -rp "Review model id (e.g. opencode/<model>-free): " REVIEW_MODEL
+    fi
 fi
 [[ -n "$REVIEW_MODEL" ]] || { err "A review model is required."; exit 1; }
 if ! opencode models 2>/dev/null | grep -qxF -- "$REVIEW_MODEL"; then
@@ -111,18 +117,33 @@ if ! opencode models 2>/dev/null | grep -qxF -- "$REVIEW_MODEL"; then
 fi
 ok "Review model: $REVIEW_MODEL"
 
-# No paid provider may be configured for OpenCode on this box: a free model
-# that runs out of quota must fail, not fall back to something billable.
-if [[ -s "$HOME/.local/share/opencode/auth.json" ]] && grep -q '"type"' "$HOME/.local/share/opencode/auth.json"; then
-    warn "OpenCode has stored provider credentials in ~/.local/share/opencode/auth.json."
-    warn "Remove any paid provider (opencode auth logout) before the reviewer uses this box."
+# No paid provider may be reachable from this box: a free model that runs out
+# of quota must fail, not fall back to something billable. Free OpenCode
+# models need no login, so any stored OpenCode credential is refused, and so
+# is any key-like variable wherever the Firehose service could get one: this
+# shell, the shell profiles, systemd's user environment, and config.env,
+# which the server loads and its agents inherit.
+OPENCODE_AUTH="$HOME/.local/share/opencode/auth.json"
+if [[ -s "$OPENCODE_AUTH" ]] && [[ "$(tr -d ' \n\t' < "$OPENCODE_AUTH")" != "{}" ]]; then
+    err "OpenCode has stored provider credentials in ~/.local/share/opencode/auth.json."
+    err "A review box uses free models, which need none: run \`opencode auth logout\` for each, then re-run."
+    exit 1
 fi
-for var in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY XAI_API_KEY; do
-    if [[ -n "${!var:-}" ]] || grep -qs "^export $var=" "$HOME/.bashrc"; then
-        err "$var is set for this user. A review box must hold no paid provider key."
-        exit 1
-    fi
-done
+KEY_PATTERN='^(export[[:space:]]+)?[A-Z0-9_]*(API_KEY|_TOKEN|ACCESS_KEY_ID|SECRET_ACCESS_KEY|_AUTH_KEY)='
+found_keys=$(
+    {
+        env
+        cat "$HOME/.bashrc" "$HOME/.profile" "$HOME/.bash_profile" "$CONFIG_ENV" 2>/dev/null || true
+        cat "$HOME"/.config/environment.d/*.conf 2>/dev/null || true
+        systemctl --user show-environment 2>/dev/null || true
+    } | { grep -E "$KEY_PATTERN" || true; } | sed -E 's/^export[[:space:]]+//; s/=.*//' | sort -u | tr '\n' ' '
+)
+if [[ -n "$found_keys" ]]; then
+    err "Key-like variables are set where Firehose or its agents could read them: $found_keys"
+    err "A review box must hold no provider key or token. Remove them (shell profiles,"
+    err "~/.config/environment.d, config.env, \`systemctl --user unset-environment\`) and re-run."
+    exit 1
+fi
 
 # ─── 2. Firehose release ──────────────────────────────────────────────
 
@@ -179,9 +200,15 @@ JS
     git -C "$FIXTURE_DIR" add README.md todo.js
     git -C "$FIXTURE_DIR" -c user.name="Firehose Review" -c user.email="review@okthink.ai" commit -qm "Start the review project"
 fi
-# The known-good state a reset returns to.
-git -C "$FIXTURE_DIR" tag -f review-baseline >/dev/null
-ok "Fixture project ready (baseline $(git -C "$FIXTURE_DIR" rev-parse --short review-baseline))"
+# The known-good state a reset returns to: set once. A re-run keeps it, so
+# whatever a session left in the fixture never becomes the baseline; move it
+# on purpose with `review-server.sh snapshot`.
+if git -C "$FIXTURE_DIR" rev-parse -q --verify refs/tags/review-baseline >/dev/null; then
+    ok "Fixture project ready (keeping baseline $(git -C "$FIXTURE_DIR" rev-parse --short review-baseline))"
+else
+    git -C "$FIXTURE_DIR" tag review-baseline
+    ok "Fixture project ready (baseline $(git -C "$FIXTURE_DIR" rev-parse --short review-baseline))"
+fi
 
 # ─── 4. Review settings ───────────────────────────────────────────────
 
@@ -212,6 +239,12 @@ ok "Review settings written to $CONFIG_ENV"
 # boot without anyone logged in.
 "$FIREHOSE_BIN" service install
 ok "Firehose starts at boot"
+# A running server read its settings at start; a re-run that changed them
+# (the model, for one) takes effect only after a restart.
+if systemctl --user is-active --quiet firehose.service; then
+    systemctl --user restart firehose.service
+    ok "Firehose restarted with the new settings"
+fi
 
 # Git ignores a repository it finds by walking up unless it is a .git folder,
 # so a folder a session writes in the fixture (HEAD, config, objects, refs)

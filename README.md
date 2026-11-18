@@ -323,9 +323,16 @@ In the tailnet policy (admin console → Access Controls), declare the tag and g
 ```jsonc
 {
   "tagOwners": { "tag:review": ["autogroup:admin"] },
-  "nodeAttrs": [{ "target": ["tag:review"], "attr": ["funnel"] }]
+  "nodeAttrs": [{ "target": ["tag:review"], "attr": ["funnel"] }],
+  // The box must not reach the rest of the tailnet. Tagged devices are not in
+  // autogroup:member, so a rule from members lets you SSH in while nothing
+  // lets the box connect out. Replace the default allow-all rule
+  // ({"src": ["*"], "dst": ["*:*"]}) with member rules like this one.
+  "acls": [{ "action": "accept", "src": ["autogroup:member"], "dst": ["*:*"] }]
 }
 ```
+
+Check the policy before the reviewer gets the box: no rule may name `*` or `tag:review` as a source. The tailnet's policy is the only thing that keeps the box from your other machines; Firehose and the box's firewall do not.
 
 ### 2. Provision and set up
 
@@ -361,7 +368,7 @@ All from your laptop:
 | `bash review-server.sh stop` | Withdraws the public address (the license service then stops issuing access tokens), then shuts the box down |
 | `bash review-server.sh status` | The box's power state, Firehose version, public access and license |
 | `bash review-server.sh check` | From outside: the health route answers, and routes, the web app and the WebSocket refuse a caller without a token |
-| `bash review-server.sh reset` | Returns the database and the fixture project to the saved baseline |
+| `bash review-server.sh reset` | Returns Firehose's data (database, uploads), OpenCode's sessions and the fixture project to the saved baseline, and starts Firehose again even if the restore fails |
 
 Start and stop keep the server's identity, so the review account never pairs again. Hetzner bills a server while it exists, powered on or off: stopping removes the public address, not the monthly charge (about the demo box's price).
 
