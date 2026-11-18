@@ -22,7 +22,7 @@
 #   --review          Provision the TestFlight Review Server: a small box
 #                     (2 vCPU / 4 GB) named firehose-review that runs the
 #                     Firehose release for Apple's reviewer, reached over its
-#                     public address. The next steps run setup.sh --no-app,
+#                     public address. The next steps run setup.sh --review,
 #                     then review-install.sh. See the README's Review Server
 #                     section; review-server.sh turns it on and off.
 #
@@ -117,7 +117,7 @@ Options:
                          CLIs — no app). Can't be combined with --demo.
       --review           Provision the TestFlight Review Server: 2 vCPU / 4 GB,
                          defaults to Ashburn (US), named firehose-review. Next
-                         steps run setup.sh --no-app, then review-install.sh.
+                         steps run setup.sh --review, then review-install.sh.
   -h, --help             Show this help and exit.
 EOF
 }
@@ -1144,7 +1144,7 @@ echo ""
 echo "    2. Run the setup script:"
 # setup.sh's summary prints the SSH alias to edit; tell it which one we wrote.
 if [[ "$REVIEW" == true ]]; then
-    printf "       ${CYAN}TS_TAGS=tag:review SSH_ALIAS=%s bash setup.sh --no-app${NC}\n" "$SSH_CONFIG_HOST"
+    printf "       ${CYAN}SSH_ALIAS=%s bash setup.sh --review${NC}\n" "$SSH_CONFIG_HOST"
     echo ""
     echo "       then, as the new user, install the review release (setup.sh"
     echo "       copies nothing from /root, so copy it over first):"

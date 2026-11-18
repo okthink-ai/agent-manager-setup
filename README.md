@@ -25,7 +25,7 @@ Setup scripts for installing [Agent Manager](https://github.com/okthink-ai/claud
 | An **Ubuntu server you already own** | `ubuntu-install.sh` | On the server |
 | **Your Mac** | `mac-install.sh` | On the Mac |
 | **Your Mac**, reached from the hosted app at `agents.okthink.ai` | `mac-install.sh --hosted` | On the Mac — see [Hosted Web App](#hosted-web-app) |
-| The **TestFlight Review Server** Apple's reviewer connects to | `provision.sh --review` → `setup.sh --no-app` → `review-install.sh` | On your laptop, then on the box — see [Review Server](#review-server--the-testflight-review-environment) |
+| The **TestFlight Review Server** Apple's reviewer connects to | `provision.sh --review` → `setup.sh --review` → `review-install.sh` | On your laptop, then on the box — see [Review Server](#review-server--the-testflight-review-environment) |
 | A **cheap demo box** guests can play with over Tailscale | `provision.sh --demo` → `setup.sh` | On your laptop, then on the demo box — see [Demo Box](#demo-box--a-cheap-instance-guests-can-play-with) |
 | A box that **already has Agent Manager** and needs updating | `migrate-to-expo.sh` | On the box — see [Updating an Existing Install](#updating-an-existing-install) |
 
@@ -332,11 +332,11 @@ In the tailnet policy (admin console → Access Controls), declare the tag and g
 ```bash
 bash provision.sh --review          # on your laptop: a 2 vCPU / 4 GB box named firehose-review
 ssh firehose-review
-TS_TAGS=tag:review SSH_ALIAS=firehose-review bash setup.sh --no-app
+bash setup.sh --review               # no GitHub sign-in, no coding agent; tags the node tag:review
 sudo install -o $USER -m 755 /root/review-install.sh ~/ && bash ~/review-install.sh
 ```
 
-`review-install.sh` installs OpenCode and the Firehose release (no source checkout), asks which free OpenCode model the reviewer gets and refuses one OpenCode does not list, refuses to continue while a paid provider key is set for the user, creates the fixture project at `~/review/fixture`, writes the review settings into `~/.firehose/config.env`, and registers Firehose to start at boot. Until a release includes public access, install from an archive built from the branch: `FIREHOSE_ARCHIVE=<path> bash ~/review-install.sh`.
+`setup.sh --review` is `--no-app` without the GitHub sign-in or any coding agent: the box's sessions run for the public reviewer, so it must hold no GitHub token and no paid agent login. `review-install.sh` refuses to continue if it finds either (a GitHub login, a Claude Code, Codex, Gemini, Pi or other agent CLI, or a stored git credential), so a box set up with plain `--no-app` has to be cleaned first. It then installs OpenCode and the Firehose release (no source checkout), asks which free OpenCode model the reviewer gets and refuses one OpenCode does not list, refuses to continue while a paid provider key is set for the user, creates the fixture project at `~/review/fixture`, writes the review settings into `~/.firehose/config.env`, and registers Firehose to start at boot. Until a release includes public access, install from an archive built from the branch: `FIREHOSE_ARCHIVE=<path> bash ~/review-install.sh`.
 
 ### 3. Activate under the review account and go public
 

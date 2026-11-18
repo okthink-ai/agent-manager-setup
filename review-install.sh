@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
 # review-install.sh — Run on the TestFlight Review Server, as the non-root user
-# setup.sh created, after `TS_TAGS=tag:review bash setup.sh --no-app`.
+# setup.sh created, after `bash setup.sh --review`.
 #
 # This script:
+#   0. Refuses to continue if the box holds a GitHub login, a git credential,
+#      or any coding agent but OpenCode: the reviewer's sessions run here
 #   1. Installs OpenCode, the one agent the reviewer may use
 #   2. Installs the Firehose release (no source checkout), without starting it
 #   3. Creates the review fixture project the reviewer's sessions run in
@@ -52,6 +54,35 @@ BLOCK_END='# <<< firehose review server <<<'
 export NVM_DIR="$HOME/.nvm"
 # shellcheck disable=SC1091
 [[ -s "$NVM_DIR/nvm.sh" ]] && . "$NVM_DIR/nvm.sh"
+
+# ─── 0. Nothing the reviewer must not reach ───────────────────────────
+
+# Review mode locks OpenCode's tools, but the box itself is the last line: it
+# must hold nothing that would let a session reach the operator's code or a
+# billable agent. setup.sh --review installs none of these; a box set up
+# another way has to be cleaned first.
+refusals=()
+if command -v gh &>/dev/null && gh auth status &>/dev/null; then
+    refusals+=("GitHub is signed in for $USER (gh auth logout)")
+fi
+[[ -s "$HOME/.config/gh/hosts.yml" ]] && refusals+=("~/.config/gh/hosts.yml holds a GitHub login (gh auth logout)")
+[[ -s "$HOME/.git-credentials" ]] && refusals+=("~/.git-credentials holds a stored git credential (remove it)")
+if git config --global --get-all credential.helper &>/dev/null; then
+    refusals+=("git has a credential helper configured (git config --global --unset-all credential.helper)")
+fi
+for bin in claude codex gemini grok kimi kiro-cli pi; do
+    command -v "$bin" &>/dev/null && refusals+=("$bin is installed ($(command -v "$bin")); a review box runs OpenCode only")
+done
+for path in .claude .codex .gemini .grok .kimi .kiro .pi; do
+    [[ -e "$HOME/$path" ]] && refusals+=("~/$path exists (an agent's settings or login); remove it")
+done
+if (( ${#refusals[@]} > 0 )); then
+    err "This box holds credentials or agents the reviewer's sessions must not reach:"
+    for refusal in "${refusals[@]}"; do err "  - $refusal"; done
+    err "Remove them (setup.sh --review installs none of them) and re-run."
+    exit 1
+fi
+ok "No GitHub login, git credential, or other coding agent on this box"
 
 # ─── 1. OpenCode ──────────────────────────────────────────────────────
 
