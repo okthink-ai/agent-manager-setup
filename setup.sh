@@ -23,6 +23,8 @@
 #                 tailscale up refuses it. Used for demo boxes so guest access
 #                 can be scoped by ACL to the dashboard port only.
 #   GH_TOKEN    — GitHub PAT with repo + read:packages (skips the browser login)
+#   NEW_USER_PASSWORD — the new user's sudo password (skips the passwd prompt;
+#                 required when stdin is not a terminal)
 #   SSH_ALIAS   — the Host alias provisioning wrote to your laptop's SSH config
 #                 (default agent-manager-vps, or linux-vps with --no-app; demo
 #                 boxes use agent-manager-demo).
@@ -104,6 +106,13 @@ if [[ -z "$NEW_USER" ]]; then
     exit 1
 fi
 
+# The new user's sudo password. Asked by passwd when the user is created, or
+# taken from NEW_USER_PASSWORD; a run without a terminal must pass it.
+if ! id "$NEW_USER" &>/dev/null && [[ -z "${NEW_USER_PASSWORD:-}" && ! -t 0 ]]; then
+    err "No terminal to ask for ${NEW_USER}'s password: export NEW_USER_PASSWORD and re-run."
+    exit 1
+fi
+
 read -rp "Git name (for commits, e.g. 'Jane Smith'): " GIT_NAME
 read -rp "Git email (for commits): " GIT_EMAIL
 
@@ -153,6 +162,9 @@ DEFAULT_SSH_ALIAS="agent-manager-vps"
 [[ "$NO_APP" == true ]] && DEFAULT_SSH_ALIAS="linux-vps"
 [[ "$REVIEW" == true ]] && DEFAULT_SSH_ALIAS="firehose-review"
 SSH_ALIAS="${SSH_ALIAS:-$DEFAULT_SSH_ALIAS}"
+# The key provision.sh made, for the printed ssh commands.
+SSH_KEY_HINT="~/.ssh/agent_manager"
+[[ "$REVIEW" == true ]] && SSH_KEY_HINT="~/.ssh/firehose_review"
 
 # Extra args for tailscale up. --advertise-tags requires the tag to be declared
 # in the tailnet ACL's tagOwners — see the README's Demo Box section.
@@ -204,7 +216,12 @@ else
     echo "  Set a password for the '$NEW_USER' account on this server."
     echo "  This is used for sudo commands — SSH uses your key, not this password."
     echo ""
-    adduser "$NEW_USER"
+    adduser --disabled-password --gecos "" "$NEW_USER"
+    if [[ -n "${NEW_USER_PASSWORD:-}" ]]; then
+        printf '%s:%s\n' "$NEW_USER" "$NEW_USER_PASSWORD" | chpasswd
+    else
+        until passwd "$NEW_USER"; do warn "Try again."; done
+    fi
     usermod -aG sudo "$NEW_USER"
     ok "User '$NEW_USER' created with sudo access"
 fi
@@ -228,7 +245,7 @@ echo ""
 echo "  Open a SECOND terminal on your laptop and verify you can SSH"
 echo "  in as the new user:"
 echo ""
-printf "    ${CYAN}ssh -i ~/.ssh/agent_manager %s@%s${NC}\n" "$NEW_USER" "$(hostname -I | awk '{print $1}')"
+printf "    ${CYAN}ssh -i ${SSH_KEY_HINT} %s@%s${NC}\n" "$NEW_USER" "$(hostname -I | awk '{print $1}')"
 echo ""
 echo "  If that works, press Enter to continue."
 echo "  If it doesn't, fix it now — after this step, root SSH is disabled."
@@ -558,7 +575,7 @@ if [[ "$WANT_CLAUDE" =~ ^[Yy] ]]; then
     echo ""
     info "Claude Code needs to authenticate. In a separate terminal on your laptop:"
     echo ""
-    printf "  ${CYAN}ssh -i ~/.ssh/agent_manager %s@%s${NC}\n" "$NEW_USER" "$(hostname -I | awk '{print $1}')"
+    printf "  ${CYAN}ssh -i ${SSH_KEY_HINT} %s@%s${NC}\n" "$NEW_USER" "$(hostname -I | awk '{print $1}')"
     printf "  ${CYAN}%s${NC}\n" "$CLAUDE_CMD"
     echo ""
     if [[ "$NO_APP" == true ]]; then

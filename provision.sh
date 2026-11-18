@@ -32,6 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETUP_SCRIPT="$SCRIPT_DIR/setup.sh"
 
 SSH_KEY_PATH="$HOME/.ssh/agent_manager"
+SSH_KEY_NAME="agent-manager-key"
 SSH_CONFIG_HOST="agent-manager-vps"
 SERVER_NAME="agent-manager"
 FIREWALL_NAME="agent-manager-firewall"
@@ -161,6 +162,10 @@ if [[ "$REVIEW" == true ]]; then
     SERVER_NAME="firehose-review"
     SSH_CONFIG_HOST="firehose-review"
     FIREWALL_NAME="firehose-review-firewall"
+    # Its own key, so a box the public reaches never trusts the key your other
+    # servers do.
+    SSH_KEY_PATH="$HOME/.ssh/firehose_review"
+    SSH_KEY_NAME="firehose-review-key"
     [[ -z "$LOCATION_OVERRIDE" ]] && LOCATION_OVERRIDE="ash"
     info "Review Server mode: floor ${MIN_VCPU} vCPU / ${MIN_RAM_GB} GB, location ${LOCATION_OVERRIDE}, server '$SERVER_NAME'"
 fi
@@ -463,6 +468,21 @@ if [[ ! -f "${SSH_KEY_PATH}.pub" ]]; then
     exit 1
 fi
 SSH_PUBKEY=$(cat "${SSH_KEY_PATH}.pub")
+
+# A key with a passphrase works only while ssh-agent holds it. Without that, an
+# unattended run creates a paid server and then cannot log in to it, so it
+# stops here, before anything is created.
+if ! ssh-keygen -y -P '' -f "$SSH_KEY_PATH" &>/dev/null; then
+    if ssh-add -L 2>/dev/null | grep -qF -- "$(awk '{print $2}' <<<"$SSH_PUBKEY")"; then
+        ok "SSH key has a passphrase; ssh-agent holds it"
+    elif [[ "$BYPASS_CONSENT" == true ]]; then
+        err "$SSH_KEY_PATH has a passphrase and ssh-agent does not hold it, so an unattended run cannot log in with it."
+        err "Load it first and re-run:  eval \"\$(ssh-agent)\" && ssh-add \"$SSH_KEY_PATH\""
+        exit 1
+    else
+        warn "$SSH_KEY_PATH has a passphrase; ssh asks for it when the script logs in (or run ssh-add first)."
+    fi
+fi
 echo ""
 
 # ─── Hetzner provisioning path ────────────────────────────────────────
@@ -621,7 +641,6 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
     fi
 
     # Upload SSH key
-    SSH_KEY_NAME="agent-manager-key"
     if hcloud ssh-key describe "$SSH_KEY_NAME" &>/dev/null; then
         ok "SSH key '$SSH_KEY_NAME' already exists in Hetzner"
     else

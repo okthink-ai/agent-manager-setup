@@ -343,6 +343,8 @@ bash setup.sh --review               # no GitHub sign-in, no coding agent; tags 
 sudo install -o $USER -m 755 /root/review-install.sh ~/ && bash ~/review-install.sh
 ```
 
+`provision.sh --review` gives the box its own SSH key, `~/.ssh/firehose_review`, so a server the public reaches never trusts the key your other servers do. An unattended run (`--bypass-consent`) stops before creating anything if the key has a passphrase that ssh-agent does not hold. To run `setup.sh` without a terminal, export `NEW_USER_PASSWORD` (the new user's sudo password) and `TS_AUTHKEY` (a pre-authorized key tagged `tag:review`).
+
 `setup.sh --review` is `--no-app` without the GitHub sign-in or any coding agent: the box's sessions run for the public reviewer, so it must hold no GitHub token and no paid agent login. `review-install.sh` refuses to continue if it finds either (a GitHub login, a Claude Code, Codex, Gemini, Pi or other agent CLI, or a stored git credential), so a box set up with plain `--no-app` has to be cleaned first. It then installs OpenCode and the Firehose release (no source checkout), asks which free OpenCode model the reviewer gets and refuses one OpenCode does not list, refuses to continue while a paid provider key is set for the user, creates the fixture project at `~/review/fixture`, writes the review settings into `~/.firehose/config.env`, and registers Firehose to start at boot. Until a release includes public access, install from an archive built from the branch: `FIREHOSE_ARCHIVE=<path> bash ~/review-install.sh`.
 
 ### 3. Activate under the review account and go public
