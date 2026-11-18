@@ -25,6 +25,7 @@ Setup scripts for installing [Agent Manager](https://github.com/okthink-ai/claud
 | An **Ubuntu server you already own** | `ubuntu-install.sh` | On the server |
 | **Your Mac** | `mac-install.sh` | On the Mac |
 | **Your Mac**, reached from the hosted app at `agents.okthink.ai` | `mac-install.sh --hosted` | On the Mac — see [Hosted Web App](#hosted-web-app) |
+| The **TestFlight Review Server** Apple's reviewer connects to | `provision.sh --review` → `setup.sh --no-app` → `review-install.sh` | On your laptop, then on the box — see [Review Server](#review-server--the-testflight-review-environment) |
 | A **cheap demo box** guests can play with over Tailscale | `provision.sh --demo` → `setup.sh` | On your laptop, then on the demo box — see [Demo Box](#demo-box--a-cheap-instance-guests-can-play-with) |
 | A box that **already has Agent Manager** and needs updating | `migrate-to-expo.sh` | On the box — see [Updating an Existing Install](#updating-an-existing-install) |
 
@@ -308,6 +309,61 @@ They open `http://<demo-box-tailscale-ip>:4801` and can browse sessions, launch 
 **Machines** → the demo box → shared-with list → remove the person. Immediate, per-guest, doesn't affect anyone else.
 
 **Notes:** guests drive real agent sessions using whatever accounts the box is authenticated with — a subscription-based Claude login works fine for this. The demo box is a full real install, so `migrate-to-expo.sh` keeps it updated like any other box.
+
+## Review Server — the TestFlight review environment
+
+The server Apple's App Store reviewer reaches from the TestFlight build: it is activated under the review account, so the app signs in and connects automatically, over a public HTTPS address instead of Tailscale. Only that account can connect, with a short-lived access token from the license service, and only to session features; the reviewer can use OpenCode with one free model in one fixture project, nothing else. See Firehose issues #1067, #1068 and #1069.
+
+The public address is [Tailscale Funnel](https://tailscale.com/kb/1223/funnel), relayed through Tailscale, so the Hetzner firewall stays closed to everything but SSH.
+
+### 1. Allow the box to use Funnel
+
+In the tailnet policy (admin console → Access Controls), declare the tag and grant it the Funnel attribute. HTTPS certificates must be enabled for the tailnet (DNS → HTTPS Certificates).
+
+```jsonc
+{
+  "tagOwners": { "tag:review": ["autogroup:admin"] },
+  "nodeAttrs": [{ "target": ["tag:review"], "attr": ["funnel"] }]
+}
+```
+
+### 2. Provision and set up
+
+```bash
+bash provision.sh --review          # on your laptop: a 2 vCPU / 4 GB box named firehose-review
+ssh firehose-review
+TS_TAGS=tag:review SSH_ALIAS=firehose-review bash setup.sh --no-app
+sudo install -o $USER -m 755 /root/review-install.sh ~/ && bash ~/review-install.sh
+```
+
+`review-install.sh` installs OpenCode and the Firehose release (no source checkout), asks which free OpenCode model the reviewer gets and refuses one OpenCode does not list, refuses to continue while a paid provider key is set for the user, creates the fixture project at `~/review/fixture`, writes the review settings into `~/.firehose/config.env`, and registers Firehose to start at boot. Until a release includes public access, install from an archive built from the branch: `FIREHOSE_ARCHIVE=<path> bash ~/review-install.sh`.
+
+### 3. Activate under the review account and go public
+
+```bash
+ssh -L 4801:127.0.0.1:4801 firehose-review   # then open http://localhost:4801 and sign in as the review account
+~/.local/bin/firehose public on              # on the box
+```
+
+Seed the sessions the reviewer should see, then save that state as the baseline:
+
+```bash
+bash review-server.sh snapshot
+```
+
+### 4. Operate it
+
+All from your laptop:
+
+| Command | What it does |
+|---|---|
+| `bash review-server.sh start` | Powers the box on, publishes the public address, and checks it |
+| `bash review-server.sh stop` | Withdraws the public address (the license service then stops issuing access tokens), then shuts the box down |
+| `bash review-server.sh status` | The box's power state, Firehose version, public access and license |
+| `bash review-server.sh check` | From outside: the health route answers, and routes, the web app and the WebSocket refuse a caller without a token |
+| `bash review-server.sh reset` | Returns the database and the fixture project to the saved baseline |
+
+Start and stop keep the server's identity, so the review account never pairs again. Hetzner bills a server while it exists, powered on or off: stopping removes the public address, not the monthly charge (about the demo box's price).
 
 ## Choosing Your Agents
 

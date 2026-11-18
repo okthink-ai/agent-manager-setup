@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+#
+# review-install.sh — Run on the TestFlight Review Server, as the non-root user
+# setup.sh created, after `TS_TAGS=tag:review bash setup.sh --no-app`.
+#
+# This script:
+#   1. Installs OpenCode, the one agent the reviewer may use
+#   2. Installs the Firehose release (no source checkout), without starting it
+#   3. Creates the review fixture project the reviewer's sessions run in
+#   4. Writes the review settings into ~/.firehose/config.env
+#   5. Registers Firehose to start at boot and starts it
+#   6. Prints the two manual steps: activating under the review account and
+#      turning public access on
+#
+# Optional env vars:
+#   FIREHOSE_ARCHIVE   — a local release archive to install instead of the latest
+#                        release, e.g. one built from a branch not released yet
+#   REVIEW_MODEL       — the OpenCode model id the reviewer gets; must be a
+#                        zero-cost model (default: read from `opencode models`,
+#                        refusing to guess)
+#   REVIEW_FIXTURE_REPO — a git URL for the fixture project (default: an empty
+#                        starter project created here)
+#
+# Designed to be idempotent — safe to re-run after a failure.
+#
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+info() { printf "${CYAN}==> %s${NC}\n" "$*"; }
+ok()   { printf "${GREEN}==> %s${NC}\n" "$*"; }
+warn() { printf "${YELLOW}==> %s${NC}\n" "$*"; }
+err()  { printf "${RED}==> %s${NC}\n" "$*" >&2; }
+
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    err "Run this as the non-root user setup.sh created, not as root."
+    exit 1
+fi
+
+FIREHOSE_HOME="${FIREHOSE_INSTALL_DIR:-$HOME/.firehose}"
+FIREHOSE_BIN="$HOME/.local/bin/firehose"
+REVIEW_ROOT="$HOME/review"
+FIXTURE_DIR="$REVIEW_ROOT/fixture"
+CONFIG_ENV="$FIREHOSE_HOME/config.env"
+BLOCK_BEGIN='# >>> firehose review server >>>'
+BLOCK_END='# <<< firehose review server <<<'
+
+export NVM_DIR="$HOME/.nvm"
+# shellcheck disable=SC1091
+[[ -s "$NVM_DIR/nvm.sh" ]] && . "$NVM_DIR/nvm.sh"
+
+# ─── 1. OpenCode ──────────────────────────────────────────────────────
+
+if command -v opencode &>/dev/null; then
+    ok "OpenCode already installed ($(opencode --version 2>/dev/null || echo unknown))"
+else
+    command -v npm &>/dev/null || { err "npm not found; run setup.sh --no-app first."; exit 1; }
+    info "Installing OpenCode..."
+    npm install -g opencode-ai
+    ok "OpenCode installed"
+fi
+
+# The reviewer may only use a model that costs nothing. Never guess one: free
+# models and their quotas change, so the choice is revalidated on every install.
+if [[ -z "${REVIEW_MODEL:-}" ]]; then
+    echo ""
+    info "Models OpenCode offers here (pick one that is free):"
+    opencode models 2>/dev/null | grep -i -- "free" || warn "No model id contains \"free\"; check OpenCode's model list."
+    echo ""
+    read -rp "Review model id (e.g. opencode/<model>-free): " REVIEW_MODEL
+fi
+[[ -n "$REVIEW_MODEL" ]] || { err "A review model is required."; exit 1; }
+if ! opencode models 2>/dev/null | grep -qxF -- "$REVIEW_MODEL"; then
+    err "OpenCode does not list $REVIEW_MODEL on this machine."
+    exit 1
+fi
+ok "Review model: $REVIEW_MODEL"
+
+# No paid provider may be configured for OpenCode on this box: a free model
+# that runs out of quota must fail, not fall back to something billable.
+if [[ -s "$HOME/.local/share/opencode/auth.json" ]] && grep -q '"type"' "$HOME/.local/share/opencode/auth.json"; then
+    warn "OpenCode has stored provider credentials in ~/.local/share/opencode/auth.json."
+    warn "Remove any paid provider (opencode auth logout) before the reviewer uses this box."
+fi
+for var in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY XAI_API_KEY; do
+    if [[ -n "${!var:-}" ]] || grep -qs "^export $var=" "$HOME/.bashrc"; then
+        err "$var is set for this user. A review box must hold no paid provider key."
+        exit 1
+    fi
+done
+
+# ─── 2. Firehose release ──────────────────────────────────────────────
+
+if [[ -x "$FIREHOSE_BIN" ]]; then
+    ok "Firehose already installed ($("$FIREHOSE_BIN" version 2>/dev/null || echo unknown))"
+else
+    info "Installing the Firehose release..."
+    INSTALL_ARGS=(--no-start --no-browser --accept-eula)
+    [[ -n "${FIREHOSE_ARCHIVE:-}" ]] && INSTALL_ARGS+=(--archive "$FIREHOSE_ARCHIVE")
+    curl -fsSL https://okthink.ai/install.sh | bash -s -- "${INSTALL_ARGS[@]}"
+    ok "Firehose installed"
+fi
+if ! "$FIREHOSE_BIN" help 2>/dev/null | grep -q "public on|off|status"; then
+    err "This Firehose release has no public access (firehose public). Install a release"
+    err "that includes it, or pass FIREHOSE_ARCHIVE=<archive built from that branch>."
+    exit 1
+fi
+
+# ─── 3. Fixture project ───────────────────────────────────────────────
+
+mkdir -p "$REVIEW_ROOT"
+if [[ -d "$FIXTURE_DIR/.git" ]]; then
+    ok "Fixture project already at $FIXTURE_DIR"
+elif [[ -n "${REVIEW_FIXTURE_REPO:-}" ]]; then
+    info "Cloning the fixture project..."
+    git clone "$REVIEW_FIXTURE_REPO" "$FIXTURE_DIR"
+else
+    info "Creating a starter fixture project..."
+    mkdir -p "$FIXTURE_DIR"
+    cat > "$FIXTURE_DIR/README.md" <<'README'
+# Review project
+
+A small project for trying Firehose. Ask the agent to add a feature, explain
+the code, or write a test.
+README
+    cat > "$FIXTURE_DIR/todo.js" <<'JS'
+// A tiny to-do list kept in memory.
+const items = []
+
+export function add(text) {
+  items.push({ text, done: false })
+  return items.length
+}
+
+export function complete(index) {
+  items[index].done = true
+}
+
+export function list() {
+  return items.map((item, i) => `${i + 1}. [${item.done ? 'x' : ' '}] ${item.text}`)
+}
+JS
+    git -C "$FIXTURE_DIR" init -q
+    git -C "$FIXTURE_DIR" add README.md todo.js
+    git -C "$FIXTURE_DIR" -c user.name="Firehose Review" -c user.email="review@okthink.ai" commit -qm "Start the review project"
+fi
+# The known-good state a reset returns to.
+git -C "$FIXTURE_DIR" tag -f review-baseline >/dev/null
+ok "Fixture project ready (baseline $(git -C "$FIXTURE_DIR" rev-parse --short review-baseline))"
+
+# ─── 4. Review settings ───────────────────────────────────────────────
+
+touch "$CONFIG_ENV"
+chmod 600 "$CONFIG_ENV"
+# Replace the block, keeping every other setting (the public access block among them).
+awk -v begin="$BLOCK_BEGIN" -v end="$BLOCK_END" '
+    $0 == begin { skip = 1; next }
+    $0 == end   { skip = 0; next }
+    !skip
+' "$CONFIG_ENV" > "$CONFIG_ENV.tmp"
+{
+    cat "$CONFIG_ENV.tmp"
+    echo "$BLOCK_BEGIN"
+    echo "CM_REVIEW_MODE=1"
+    echo "CM_REVIEW_PROVIDER=opencode"
+    echo "CM_REVIEW_MODEL=$REVIEW_MODEL"
+    echo "CM_REVIEW_PROJECT=$FIXTURE_DIR"
+    echo "CODE_DIRS=$REVIEW_ROOT"
+    echo "$BLOCK_END"
+} > "$CONFIG_ENV"
+rm -f "$CONFIG_ENV.tmp"
+ok "Review settings written to $CONFIG_ENV"
+
+# ─── 5. Start at boot ─────────────────────────────────────────────────
+
+# Registers the systemd user service and turns on lingering, so it runs at
+# boot without anyone logged in.
+"$FIREHOSE_BIN" service install
+ok "Firehose starts at boot"
+
+# `firehose public on` runs Funnel as this user, which Tailscale allows only
+# its operator.
+sudo tailscale set --operator="$USER"
+ok "Tailscale lets $USER publish with Funnel"
+
+# ─── 6. Manual steps ──────────────────────────────────────────────────
+
+echo ""
+printf "${BOLD}────────────────────────────────────────────────────${NC}\n"
+printf "${GREEN}  Review Server installed. Two steps remain:${NC}\n"
+printf "${BOLD}────────────────────────────────────────────────────${NC}\n"
+echo ""
+echo "  1. Activate Firehose under the review account. From your laptop:"
+printf "       ${CYAN}ssh -L 4801:127.0.0.1:4801 firehose-review${NC}\n"
+echo "     then open http://localhost:4801 and sign in with the review account."
+echo ""
+echo "  2. Turn public access on, here:"
+printf "       ${CYAN}%s public on${NC}\n" "$FIREHOSE_BIN"
+echo ""
+echo "  Afterwards, from your laptop: bash review-server.sh check"
+echo ""
