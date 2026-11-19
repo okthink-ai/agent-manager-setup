@@ -258,6 +258,10 @@ README
         commit -qm "Introduce the project as Hello Firehose"
 fi
 
+# Firehose ships its own Node; a non-interactive shell has no other on PATH.
+node() { "$HOME/.firehose/current/runtime/node" "$@"; }
+[ -x "$HOME/.firehose/current/runtime/node" ] || { echo "Firehose's runtime is missing at ~/.firehose/current/runtime/node." >&2; exit 1; }
+
 # The server answers on loopback over HTTPS when it holds a certificate pair.
 port="${REVIEW_PORT:-4801}"
 base="https://127.0.0.1:$port"
