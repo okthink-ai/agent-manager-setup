@@ -176,11 +176,22 @@ elif [[ -n "${REVIEW_FIXTURE_REPO:-}" ]]; then
 else
     info "Creating a starter fixture project..."
     mkdir -p "$FIXTURE_DIR"
+    # review-server.sh seed writes the same README over an older starter.
     cat > "$FIXTURE_DIR/README.md" <<'README'
-# Review project
+# Hello Firehose
 
-A small project for trying Firehose. Ask the agent to add a feature, explain
-the code, or write a test.
+A small project for trying Firehose. Firehose runs a coding agent on a server
+and lets you work with it from your phone. This project is that server's
+sandbox: a tiny to-do list in `todo.js`.
+
+Start a session, or open the one already here, and ask the agent something:
+
+- Explain what this project does.
+- Add a `remove` function to `todo.js`.
+- Write a test for `complete`.
+- What would break if `complete` got an index that does not exist?
+
+The agent can read and edit the files here. It cannot run shell commands.
 README
     cat > "$FIXTURE_DIR/todo.js" <<'JS'
 // A tiny to-do list kept in memory.
@@ -201,7 +212,7 @@ export function list() {
 JS
     git -C "$FIXTURE_DIR" init -q
     git -C "$FIXTURE_DIR" add README.md todo.js
-    git -C "$FIXTURE_DIR" -c user.name="Firehose Review" -c user.email="review@okthink.ai" commit -qm "Start the review project"
+    git -C "$FIXTURE_DIR" -c user.name="Firehose Review" -c user.email="review@okthink.ai" commit -qm "Start the Hello Firehose project"
 fi
 # The known-good state a reset returns to: set once. A re-run keeps it, so
 # whatever a session left in the fixture never becomes the baseline; move it

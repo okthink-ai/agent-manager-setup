@@ -354,11 +354,14 @@ ssh -L 4801:127.0.0.1:4801 firehose-review   # then open http://localhost:4801 a
 ~/.local/bin/firehose public on              # on the box
 ```
 
-Seed the sessions the reviewer should see, then save that state as the baseline:
+Give the reviewer something to open, then save that state as the baseline:
 
 ```bash
-bash review-server.sh snapshot
+bash review-server.sh seed        # the Hello Firehose project and one finished session in it
+bash review-server.sh snapshot    # after reading the session's reply in the app
 ```
+
+`seed` starts a real session through the box's own Firehose, so the review model has to answer. It adds nothing when the box already has a session; run `reset` first to seed from the baseline.
 
 ### 4. Operate it
 
@@ -370,6 +373,7 @@ All from your laptop:
 | `bash review-server.sh stop` | Withdraws the public address (the license service then stops issuing access tokens), then shuts the box down |
 | `bash review-server.sh status` | The box's power state, Firehose version, public access and license |
 | `bash review-server.sh check` | From outside: the health route answers, and routes, the web app and the WebSocket refuse a caller without a token |
+| `bash review-server.sh seed` | Makes the fixture the Hello Firehose project and starts one session in it, waiting for the model's reply |
 | `bash review-server.sh reset` | Returns Firehose's data (database, uploads), OpenCode's sessions and the fixture project to the saved baseline, and starts Firehose again even if the restore fails |
 
 Start and stop keep the server's identity, so the review account never pairs again. Hetzner bills a server while it exists, powered on or off: stopping removes the public address, not the monthly charge (about the demo box's price).
