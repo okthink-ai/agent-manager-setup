@@ -16,7 +16,8 @@
 #
 # Optional env vars:
 #   FIREHOSE_ARCHIVE   — a local release archive to install instead of the latest
-#                        release, e.g. one built from a branch not released yet
+#                        release, e.g. one built from a branch not released yet;
+#                        installed over an existing install, so a re-run updates
 #   REVIEW_MODEL       — the OpenCode model id the reviewer gets; must be a
 #                        zero-cost model (default: read from `opencode models`,
 #                        refusing to guess)
@@ -147,7 +148,9 @@ fi
 
 # ─── 2. Firehose release ──────────────────────────────────────────────
 
-if [[ -x "$FIREHOSE_BIN" ]]; then
+# A given archive is installed even over an existing install, so a re-run with
+# a new FIREHOSE_ARCHIVE updates the box; without one, an install is kept.
+if [[ -x "$FIREHOSE_BIN" && -z "${FIREHOSE_ARCHIVE:-}" ]]; then
     ok "Firehose already installed ($("$FIREHOSE_BIN" version 2>/dev/null || echo unknown))"
 else
     info "Installing the Firehose release..."
