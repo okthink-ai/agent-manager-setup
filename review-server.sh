@@ -29,6 +29,8 @@ SERVER_NAME="${REVIEW_SERVER_NAME:-firehose-review}"
 SSH_HOST="${REVIEW_SSH_HOST:-firehose-review}"
 REMOTE_FIREHOSE='~/.local/bin/firehose'
 BASELINE_DIR='$HOME/review/baseline'
+# Named for what the reviewer sees: the app shows a project by its folder name.
+FIXTURE_DIR='$HOME/review/hello-firehose'
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -191,7 +193,7 @@ cmd_snapshot() {
             cp -a \"\$dir/.\" \"$BASELINE_DIR.new/\$(basename \"\$dir\")/\"
         done
         rm -rf $BASELINE_DIR && mv $BASELINE_DIR.new $BASELINE_DIR
-        git -C ~/review/fixture tag -f review-baseline >/dev/null"
+        git -C $FIXTURE_DIR tag -f review-baseline >/dev/null"
     ok "Baseline saved"
 }
 
@@ -208,8 +210,8 @@ cmd_reset() {
             rm -rf \"\$dir\" && mkdir -p \"\$dir\"
             cp -a \"$BASELINE_DIR/\$name/.\" \"\$dir/\"
         done
-        git -C ~/review/fixture reset -q --hard review-baseline
-        git -C ~/review/fixture clean -qffdx
+        git -C $FIXTURE_DIR reset -q --hard review-baseline
+        git -C $FIXTURE_DIR clean -qffdx
         rm -rf /tmp/opencode 2>/dev/null || true"
     ok "Review state reset"
 }
@@ -229,7 +231,7 @@ SEED_PROMPT='Read README.md and todo.js. In a few sentences, say what this proje
 seed_script() {
     cat <<'REMOTE'
 set -euo pipefail
-fixture="$HOME/review/fixture"
+fixture="$HOME/review/hello-firehose"
 config="$HOME/.firehose/config.env"
 [ -d "$fixture/.git" ] || { echo "No fixture project at $fixture; run review-install.sh first." >&2; exit 1; }
 model=$(grep -s '^CM_REVIEW_MODEL=' "$config" | tail -1 | cut -d= -f2-)

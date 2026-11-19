@@ -47,7 +47,9 @@ fi
 FIREHOSE_HOME="${FIREHOSE_INSTALL_DIR:-$HOME/.firehose}"
 FIREHOSE_BIN="$HOME/.local/bin/firehose"
 REVIEW_ROOT="$HOME/review"
-FIXTURE_DIR="$REVIEW_ROOT/fixture"
+# The app shows a project by its folder name, so the folder is the name the
+# reviewer sees.
+FIXTURE_DIR="$REVIEW_ROOT/hello-firehose"
 CONFIG_ENV="$FIREHOSE_HOME/config.env"
 BLOCK_BEGIN='# >>> firehose review server >>>'
 BLOCK_END='# <<< firehose review server <<<'
@@ -168,6 +170,11 @@ fi
 # ─── 3. Fixture project ───────────────────────────────────────────────
 
 mkdir -p "$REVIEW_ROOT"
+# A box set up before the project had a name kept it in ~/review/fixture.
+if [[ -d "$REVIEW_ROOT/fixture/.git" && ! -e "$FIXTURE_DIR" ]]; then
+    info "Renaming the fixture project to $(basename "$FIXTURE_DIR")..."
+    mv "$REVIEW_ROOT/fixture" "$FIXTURE_DIR"
+fi
 if [[ -d "$FIXTURE_DIR/.git" ]]; then
     ok "Fixture project already at $FIXTURE_DIR"
 elif [[ -n "${REVIEW_FIXTURE_REPO:-}" ]]; then
@@ -210,7 +217,7 @@ export function list() {
   return items.map((item, i) => `${i + 1}. [${item.done ? 'x' : ' '}] ${item.text}`)
 }
 JS
-    git -C "$FIXTURE_DIR" init -q
+    git -C "$FIXTURE_DIR" init -q -b main
     git -C "$FIXTURE_DIR" add README.md todo.js
     git -C "$FIXTURE_DIR" -c user.name="Firehose Review" -c user.email="review@okthink.ai" commit -qm "Start the Hello Firehose project"
 fi
