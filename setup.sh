@@ -23,24 +23,33 @@
 #                 tailscale up refuses it. Used for demo boxes so guest access
 #                 can be scoped by ACL to the dashboard port only.
 #   GH_TOKEN    — GitHub PAT with repo + read:packages (skips the browser login)
+#   NEW_USER_PASSWORD — the new user's sudo password (skips the passwd prompt;
+#                 required when stdin is not a terminal)
 #   SSH_ALIAS   — the Host alias provisioning wrote to your laptop's SSH config
 #                 (default agent-manager-vps, or linux-vps with --no-app; demo
 #                 boxes use agent-manager-demo).
 #                 Only affects the printed summary.
 #
-# Usage: bash setup.sh [--no-app]
+# Usage: bash setup.sh [--no-app | --review]
 #   --no-app  Set up the machine only (user, SSH hardening, fail2ban, Node,
 #             Tailscale, GitHub CLI, AI coding CLIs) and skip step 8 — no
 #             Agent Manager checkout, build, or server.
+#   --review  For the TestFlight Review Server (provision.sh --review): like
+#             --no-app, but never signs in to GitHub and installs no coding
+#             agent, because the box's sessions run for the public reviewer.
+#             Tags the node tag:review and names it firehose-review unless
+#             TS_TAGS or SSH_ALIAS say otherwise. review-install.sh follows.
 #
 # Designed to be idempotent — safe to re-run after a failure.
 #
 set -euo pipefail
 
 NO_APP=false
+REVIEW=false
 for arg in "$@"; do
     case "$arg" in
         --no-app) NO_APP=true ;;
+        --review) NO_APP=true; REVIEW=true ;;
         -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) printf 'Unknown option: %s (try --help)\n' "$arg" >&2; exit 1 ;;
     esac
@@ -97,6 +106,13 @@ if [[ -z "$NEW_USER" ]]; then
     exit 1
 fi
 
+# The new user's sudo password. Asked by passwd when the user is created, or
+# taken from NEW_USER_PASSWORD; a run without a terminal must pass it.
+if ! id "$NEW_USER" &>/dev/null && [[ -z "${NEW_USER_PASSWORD:-}" && ! -t 0 ]]; then
+    err "No terminal to ask for ${NEW_USER}'s password: export NEW_USER_PASSWORD and re-run."
+    exit 1
+fi
+
 read -rp "Git name (for commits, e.g. 'Jane Smith'): " GIT_NAME
 read -rp "Git email (for commits): " GIT_EMAIL
 
@@ -116,8 +132,13 @@ fi
 
 # Agent Manager needs GitHub (checkout + GitHub Packages). A machine-only box
 # doesn't, so let people keep GitHub credentials off it. A GH_TOKEN counts as yes.
+# A review box never holds GitHub credentials: its sessions run for the
+# public reviewer, so a GH_TOKEN is ignored there rather than used.
 WANT_GH=y
-if [[ "$NO_APP" == true && -z "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]]; then
+if [[ "$REVIEW" == true ]]; then
+    WANT_GH=n
+    unset GH_TOKEN GITHUB_TOKEN
+elif [[ "$NO_APP" == true && -z "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]]; then
     read -rp "Sign in to GitHub on this box (gh auth + git credential helper)? (Y/n): " WANT_GH
     WANT_GH="${WANT_GH:-y}"
 fi
@@ -131,6 +152,7 @@ REPO_URL="https://github.com/okthink-ai/claude-manager.git"
 # When unset, the script falls back to the interactive login for that service.
 TS_AUTHKEY="${TS_AUTHKEY:-${TAILSCALE_AUTHKEY:-}}"
 TS_TAGS="${TS_TAGS:-}"
+[[ "$REVIEW" == true && -z "$TS_TAGS" ]] && TS_TAGS="tag:review"
 GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 
 # SSH alias the completion summary tells you to edit/use on your laptop.
@@ -138,7 +160,11 @@ GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 # for --demo boxes, and linux-vps for --no-app boxes.
 DEFAULT_SSH_ALIAS="agent-manager-vps"
 [[ "$NO_APP" == true ]] && DEFAULT_SSH_ALIAS="linux-vps"
+[[ "$REVIEW" == true ]] && DEFAULT_SSH_ALIAS="firehose-review"
 SSH_ALIAS="${SSH_ALIAS:-$DEFAULT_SSH_ALIAS}"
+# The key provision.sh made, for the printed ssh commands.
+SSH_KEY_HINT="~/.ssh/agent_manager"
+[[ "$REVIEW" == true ]] && SSH_KEY_HINT="~/.ssh/firehose_review"
 
 # Extra args for tailscale up. --advertise-tags requires the tag to be declared
 # in the tailnet ACL's tagOwners — see the README's Demo Box section.
@@ -147,7 +173,11 @@ TS_UP_ARGS=()
 
 echo ""
 info "Will create user '$NEW_USER' and install everything under /home/$NEW_USER"
-[[ "$NO_APP" == true ]] && info "Machine-only setup (--no-app) — Agent Manager will not be installed"
+if [[ "$REVIEW" == true ]]; then
+    info "Review Server setup (--review) — no GitHub sign-in and no coding agent; review-install.sh follows"
+elif [[ "$NO_APP" == true ]]; then
+    info "Machine-only setup (--no-app) — Agent Manager will not be installed"
+fi
 [[ -n "$TS_AUTHKEY" ]] && ok "Tailscale auth key detected — will connect non-interactively"
 [[ -n "$GH_TOKEN" ]]   && ok "GitHub token detected — will authenticate non-interactively"
 echo ""
@@ -186,7 +216,12 @@ else
     echo "  Set a password for the '$NEW_USER' account on this server."
     echo "  This is used for sudo commands — SSH uses your key, not this password."
     echo ""
-    adduser "$NEW_USER"
+    adduser --disabled-password --gecos "" "$NEW_USER"
+    if [[ -n "${NEW_USER_PASSWORD:-}" ]]; then
+        printf '%s:%s\n' "$NEW_USER" "$NEW_USER_PASSWORD" | chpasswd
+    else
+        until passwd "$NEW_USER"; do warn "Try again."; done
+    fi
     usermod -aG sudo "$NEW_USER"
     ok "User '$NEW_USER' created with sudo access"
 fi
@@ -210,7 +245,7 @@ echo ""
 echo "  Open a SECOND terminal on your laptop and verify you can SSH"
 echo "  in as the new user:"
 echo ""
-printf "    ${CYAN}ssh -i ~/.ssh/agent_manager %s@%s${NC}\n" "$NEW_USER" "$(hostname -I | awk '{print $1}')"
+printf "    ${CYAN}ssh -i ${SSH_KEY_HINT} %s@%s${NC}\n" "$NEW_USER" "$(hostname -I | awk '{print $1}')"
 echo ""
 echo "  If that works, press Enter to continue."
 echo "  If it doesn't, fix it now — after this step, root SSH is disabled."
@@ -372,7 +407,9 @@ if ! command -v gh &>/dev/null; then
     apt install -y gh
 fi
 
-if [[ ! "$WANT_GH" =~ ^[Yy] ]]; then
+if [[ "$REVIEW" == true ]]; then
+    ok "Review box — GitHub sign-in skipped; keep GitHub credentials off this machine"
+elif [[ ! "$WANT_GH" =~ ^[Yy] ]]; then
     warn "Skipping GitHub sign-in — run 'gh auth login' as $NEW_USER later if you need it."
 else
     # Check if already authenticated
@@ -474,7 +511,9 @@ ok "Git configured: $GIT_NAME <$GIT_EMAIL>"
 
 section "7/$TOTAL_STEPS  Claude Code"
 
-if [[ "$NO_APP" == true ]]; then
+if [[ "$REVIEW" == true ]]; then
+    echo "  A review box runs OpenCode only, which review-install.sh installs."
+elif [[ "$NO_APP" == true ]]; then
     echo "  Claude Code is the default; Codex, Gemini, and Pi are offered next."
 else
     echo "  Agent Manager can drive Claude Code, Codex, Gemini, or Pi — install any"
@@ -483,7 +522,10 @@ fi
 echo ""
 
 WANT_CLAUDE=y
-if run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && command -v claude' &>/dev/null; then
+if [[ "$REVIEW" == true ]]; then
+    WANT_CLAUDE=n
+    ok "Review box — Claude Code skipped"
+elif run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && command -v claude' &>/dev/null; then
     CLAUDE_VERSION=$(run_as_user 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && claude --version' 2>/dev/null || echo "unknown")
     ok "Claude Code already installed: $CLAUDE_VERSION"
 else
@@ -533,7 +575,7 @@ if [[ "$WANT_CLAUDE" =~ ^[Yy] ]]; then
     echo ""
     info "Claude Code needs to authenticate. In a separate terminal on your laptop:"
     echo ""
-    printf "  ${CYAN}ssh -i ~/.ssh/agent_manager %s@%s${NC}\n" "$NEW_USER" "$(hostname -I | awk '{print $1}')"
+    printf "  ${CYAN}ssh -i ${SSH_KEY_HINT} %s@%s${NC}\n" "$NEW_USER" "$(hostname -I | awk '{print $1}')"
     printf "  ${CYAN}%s${NC}\n" "$CLAUDE_CMD"
     echo ""
     if [[ "$NO_APP" == true ]]; then
@@ -556,17 +598,21 @@ echo "  you have accounts or API keys for — skip the rest, you can add them la
 echo "  Each still needs its own auth (shown after install)."
 echo ""
 
-read -rp "Install OpenAI Codex CLI? (y/n): " WANT_CODEX
-[[ "$WANT_CODEX" =~ ^[Yy] ]] && install_npm_cli codex "@openai/codex" "Codex CLI" \
-    "run 'codex' and sign in, or set OPENAI_API_KEY"
+if [[ "$REVIEW" == true ]]; then
+    ok "Review box — other coding agents skipped"
+else
+    read -rp "Install OpenAI Codex CLI? (y/n): " WANT_CODEX
+    [[ "$WANT_CODEX" =~ ^[Yy] ]] && install_npm_cli codex "@openai/codex" "Codex CLI" \
+        "run 'codex' and sign in, or set OPENAI_API_KEY"
 
-read -rp "Install Google Gemini CLI? (y/n): " WANT_GEMINI
-[[ "$WANT_GEMINI" =~ ^[Yy] ]] && install_npm_cli gemini "@google/gemini-cli" "Gemini CLI" \
-    "run 'gemini' and sign in with Google, or set GEMINI_API_KEY"
+    read -rp "Install Google Gemini CLI? (y/n): " WANT_GEMINI
+    [[ "$WANT_GEMINI" =~ ^[Yy] ]] && install_npm_cli gemini "@google/gemini-cli" "Gemini CLI" \
+        "run 'gemini' and sign in with Google, or set GEMINI_API_KEY"
 
-read -rp "Install Pi coding agent (pi.dev)? (y/n): " WANT_PI
-[[ "$WANT_PI" =~ ^[Yy] ]] && install_npm_cli pi "@earendil-works/pi-coding-agent" "Pi coding agent" \
-    "run 'pi' and follow the prompts, or set your provider API key"
+    read -rp "Install Pi coding agent (pi.dev)? (y/n): " WANT_PI
+    [[ "$WANT_PI" =~ ^[Yy] ]] && install_npm_cli pi "@earendil-works/pi-coding-agent" "Pi coding agent" \
+        "run 'pi' and follow the prompts, or set your provider API key"
+fi
 
 # Agent Manager needs at least one agent CLI to drive. Check what's actually on
 # the user's PATH (covers pre-installed agents too), and warn — don't abort — if
@@ -749,7 +795,14 @@ printf "     ${CYAN}Host %s\n" "$SSH_ALIAS"
 printf "         User %s${NC}\n" "$NEW_USER"
 STEP=$((STEP + 1))
 
-if [[ "$NO_APP" == true ]]; then
+if [[ "$REVIEW" == true ]]; then
+    echo ""
+    printf "  ${STEP}. As %s, install the review release and its settings:\n" "$NEW_USER"
+    echo ""
+    printf "     ${CYAN}ssh %s${NC}\n" "$SSH_ALIAS"
+    printf "     ${CYAN}sudo install -o \$USER -m 755 /root/review-install.sh ~/ && bash ~/review-install.sh${NC}\n"
+    STEP=$((STEP + 1))
+elif [[ "$NO_APP" == true ]]; then
     :
 elif [[ "$START_NOW" =~ ^[Yy] ]]; then
     echo ""

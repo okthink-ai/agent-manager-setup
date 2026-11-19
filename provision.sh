@@ -8,7 +8,7 @@
 #
 # Either way, it generates an SSH key (if needed), writes ~/.ssh/config, and scp's setup.sh to the server.
 #
-# Usage: bash provision.sh [-y|--bypass-consent] [--demo] [--no-app]
+# Usage: bash provision.sh [-y|--bypass-consent] [--demo] [--no-app] [--review]
 #   --bypass-consent  Run unattended — accept every consent prompt and use the
 #                     default choices (suggested location, cheapest server type).
 #   --demo            Provision a cheap demo box instead of a production one:
@@ -19,6 +19,12 @@
 #   --no-app          Provision a plain Linux box, not an Agent Manager host:
 #                     distinct server + SSH names (linux-vps) so it can coexist
 #                     with a production box; the next steps run setup.sh --no-app.
+#   --review          Provision the TestFlight Review Server: a small box
+#                     (2 vCPU / 4 GB) named firehose-review that runs the
+#                     Firehose release for Apple's reviewer, reached over its
+#                     public address. The next steps run setup.sh --review,
+#                     then review-install.sh. See the README's Review Server
+#                     section; review-server.sh turns it on and off.
 #
 set -euo pipefail
 
@@ -26,6 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETUP_SCRIPT="$SCRIPT_DIR/setup.sh"
 
 SSH_KEY_PATH="$HOME/.ssh/agent_manager"
+SSH_KEY_NAME="agent-manager-key"
 SSH_CONFIG_HOST="agent-manager-vps"
 SERVER_NAME="agent-manager"
 FIREWALL_NAME="agent-manager-firewall"
@@ -48,6 +55,11 @@ DEMO=false
 # it coexists with a production box, and the printed next steps run
 # setup.sh --no-app, which sets up the machine without installing Agent Manager.
 NO_APP=false
+
+# When true (set by --review), provision the TestFlight Review Server: the demo
+# box's floor, its own names, and review-install.sh copied beside setup.sh.
+REVIEW=false
+REVIEW_INSTALL_SCRIPT="$SCRIPT_DIR/review-install.sh"
 
 # When true (set by -y/--bypass-consent), every consent prompt is auto-accepted
 # and selection prompts use their defaults — for unattended/automated runs.
@@ -104,6 +116,9 @@ Options:
                          coexists with a production box. The next steps run
                          setup.sh --no-app (user, hardening, Node, Tailscale,
                          CLIs — no app). Can't be combined with --demo.
+      --review           Provision the TestFlight Review Server: 2 vCPU / 4 GB,
+                         defaults to Ashburn (US), named firehose-review. Next
+                         steps run setup.sh --review, then review-install.sh.
   -h, --help             Show this help and exit.
 EOF
 }
@@ -119,6 +134,7 @@ while [[ $# -gt 0 ]]; do
         --location=*) LOCATION_OVERRIDE="${1#*=}" ;;
         --demo) DEMO=true ;;
         --no-app) NO_APP=true ;;
+        --review) REVIEW=true ;;
         -h|--help) usage; exit 0 ;;
         *) err "Unknown option: $1"; echo "" >&2; usage >&2; exit 1 ;;
     esac
@@ -129,6 +145,29 @@ done
 if [[ "$DEMO" == true && "$NO_APP" == true ]]; then
     err "--demo and --no-app can't be combined: a demo box runs Agent Manager for guests."
     exit 1
+fi
+
+if [[ "$REVIEW" == true && ( "$DEMO" == true || "$NO_APP" == true ) ]]; then
+    err "--review can't be combined with --demo or --no-app."
+    exit 1
+fi
+
+# Review Server mode: the demo floor and its own names, so it coexists with a
+# production and a demo box, and its own firewall object for the same reason
+# as theirs. Funnel reaches it through Tailscale's relay, so the firewall's
+# inbound rules stay SSH-only.
+if [[ "$REVIEW" == true ]]; then
+    MIN_VCPU=2
+    MIN_RAM_GB=4
+    SERVER_NAME="firehose-review"
+    SSH_CONFIG_HOST="firehose-review"
+    FIREWALL_NAME="firehose-review-firewall"
+    # Its own key, so a box the public reaches never trusts the key your other
+    # servers do.
+    SSH_KEY_PATH="$HOME/.ssh/firehose_review"
+    SSH_KEY_NAME="firehose-review-key"
+    [[ -z "$LOCATION_OVERRIDE" ]] && LOCATION_OVERRIDE="ash"
+    info "Review Server mode: floor ${MIN_VCPU} vCPU / ${MIN_RAM_GB} GB, location ${LOCATION_OVERRIDE}, server '$SERVER_NAME'"
 fi
 
 # Machine-only mode: same spec floor and firewall rules, distinct names — a
@@ -429,6 +468,21 @@ if [[ ! -f "${SSH_KEY_PATH}.pub" ]]; then
     exit 1
 fi
 SSH_PUBKEY=$(cat "${SSH_KEY_PATH}.pub")
+
+# A key with a passphrase works only while ssh-agent holds it. Without that, an
+# unattended run creates a paid server and then cannot log in to it, so it
+# stops here, before anything is created.
+if ! ssh-keygen -y -P '' -f "$SSH_KEY_PATH" &>/dev/null; then
+    if ssh-add -L 2>/dev/null | grep -qF -- "$(awk '{print $2}' <<<"$SSH_PUBKEY")"; then
+        ok "SSH key has a passphrase; ssh-agent holds it"
+    elif [[ "$BYPASS_CONSENT" == true ]]; then
+        err "$SSH_KEY_PATH has a passphrase and ssh-agent does not hold it, so an unattended run cannot log in with it."
+        err "Load it first and re-run:  eval \"\$(ssh-agent)\" && ssh-add \"$SSH_KEY_PATH\""
+        exit 1
+    else
+        warn "$SSH_KEY_PATH has a passphrase; ssh asks for it when the script logs in (or run ssh-add first)."
+    fi
+fi
 echo ""
 
 # ─── Hetzner provisioning path ────────────────────────────────────────
@@ -587,7 +641,6 @@ if [[ "$USE_API" =~ ^[Yy] ]]; then
     fi
 
     # Upload SSH key
-    SSH_KEY_NAME="agent-manager-key"
     if hcloud ssh-key describe "$SSH_KEY_NAME" &>/dev/null; then
         ok "SSH key '$SSH_KEY_NAME' already exists in Hetzner"
     else
@@ -1087,6 +1140,10 @@ ok "Server is reachable"
 info "Copying setup.sh to server..."
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i "$SSH_KEY_PATH" "$SETUP_SCRIPT" "root@${SERVER_IP}:~/setup.sh"
 ok "setup.sh copied to server"
+if [[ "$REVIEW" == true ]]; then
+    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i "$SSH_KEY_PATH" "$REVIEW_INSTALL_SCRIPT" "root@${SERVER_IP}:~/review-install.sh"
+    ok "review-install.sh copied to server"
+fi
 
 # ─── Done ─────────────────────────────────────────────────────────────
 
@@ -1105,7 +1162,13 @@ printf "       ${CYAN}ssh %s${NC}\n" "$SSH_CONFIG_HOST"
 echo ""
 echo "    2. Run the setup script:"
 # setup.sh's summary prints the SSH alias to edit; tell it which one we wrote.
-if [[ "$NO_APP" == true ]]; then
+if [[ "$REVIEW" == true ]]; then
+    printf "       ${CYAN}SSH_ALIAS=%s bash setup.sh --review${NC}\n" "$SSH_CONFIG_HOST"
+    echo ""
+    echo "       then, as the new user, install the review release (setup.sh"
+    echo "       copies nothing from /root, so copy it over first):"
+    printf "       ${CYAN}sudo install -o \$USER -m 755 /root/review-install.sh ~/ && bash ~/review-install.sh${NC}\n"
+elif [[ "$NO_APP" == true ]]; then
     printf "       ${CYAN}SSH_ALIAS=%s bash setup.sh --no-app${NC}\n" "$SSH_CONFIG_HOST"
 else
     printf "       ${CYAN}bash setup.sh${NC}\n"
